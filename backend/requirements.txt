@@ -7,3 +7,4 @@ dnspython==2.7.0
 Flask-Limiter==3.10.1
 supabase==2.27.3
 twilio==9.10.0
+gunicorn==21.2.0

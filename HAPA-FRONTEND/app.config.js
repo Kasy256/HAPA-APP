@@ -16,9 +16,11 @@ export default {
             backgroundColor: '#000000'
         },
         ios: {
-            supportsTablet: true
+            supportsTablet: true,
+            bundleIdentifier: 'com.hapa.app'
         },
         android: {
+            package: 'com.hapa.app',
             adaptiveIcon: {
                 foregroundImage: './assets/images/hapalogo.png',
                 backgroundColor: '#000000'

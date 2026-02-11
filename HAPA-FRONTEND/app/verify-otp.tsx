@@ -20,7 +20,14 @@ export default function OTPVerificationScreen() {
     useEffect(() => {
         // Auto-focus first input on mount
         inputRefs.current[0]?.focus();
-    }, []);
+
+        // If OTP was passed in params (dev mode), show it in a popup
+        if (params.otp) {
+            setTimeout(() => {
+                Alert.alert('Developer OTP', `Your verification code is: ${params.otp}\n\n(This popup only appears in development mode)`);
+            }, 500);
+        }
+    }, [params.otp]);
 
     const handleOtpChange = (value: string, index: number) => {
         if (value.length > 1) {

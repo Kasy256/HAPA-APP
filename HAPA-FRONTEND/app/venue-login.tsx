@@ -25,14 +25,17 @@ export default function VenueLoginScreen() {
 
         try {
             setLoading(true);
-            await apiFetch('/api/auth/request-otp', {
+            const response = await apiFetch('/api/auth/request-otp', {
                 method: 'POST',
                 body: JSON.stringify({ phone_number: phoneNumber }),
             });
 
             router.push({
                 pathname: '/verify-otp',
-                params: { phone: phoneNumber },
+                params: {
+                    phone: phoneNumber,
+                    otp: response.otp // Pass the OTP to the next screen if available
+                },
             });
         } catch (error: any) {
             Alert.alert('Error', error.message || 'Failed to send OTP');

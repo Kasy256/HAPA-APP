@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import os
 
 from flask import jsonify, request
 from flask_jwt_extended import (
@@ -32,8 +33,14 @@ def request_otp():
     supabase.table("otp_codes").insert(otp_row).execute()
 
     send_otp(phone, code)
+    
+    # In development mode (log provider), return the code in the response 
+    # so the frontend can display it in a popup for convenience.
+    response_data = {"success": True}
+    if os.getenv("SMS_PROVIDER", "log").lower() == "log":
+        response_data["otp"] = code
 
-    return jsonify({"success": True}), 200
+    return jsonify(response_data), 200
 
 
 @bp.post("/verify-otp")

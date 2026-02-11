@@ -2,12 +2,14 @@ import { createClient } from '@supabase/supabase-js';
 import { decode } from 'base64-arraybuffer';
 import * as FileSystem from 'expo-file-system/legacy';
 
-const SUPABASE_URL = process.env.EXPO_SUPABASE_URL as string;
-const SUPABASE_ANON_KEY = process.env.EXPO_SUPABASE_ANON_KEY as string;
+import Constants from 'expo-constants';
+
+const SUPABASE_URL = Constants.expoConfig?.extra?.EXPO_SUPABASE_URL as string;
+const SUPABASE_ANON_KEY = Constants.expoConfig?.extra?.EXPO_SUPABASE_ANON_KEY as string;
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.warn(
-    '[Supabase] EXPO_SUPABASE_URL or EXPO_SUPABASE_ANON_KEY are not set. ' +
+    '[Supabase] EXPO_SUPABASE_URL or EXPO_SUPABASE_ANON_KEY are not set in app.config.js extra. ' +
     'Media uploads will fail until these are configured.',
   );
 }

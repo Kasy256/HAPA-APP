@@ -1,9 +1,10 @@
+import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 
 const DEFAULT_BASE_URL = 'http://localhost:5000';
 
 export const API_BASE_URL =
-  (process.env.EXPO_API_BASE_URL as string | undefined) ?? DEFAULT_BASE_URL;
+  (Constants.expoConfig?.extra?.EXPO_API_BASE_URL as string | undefined) ?? DEFAULT_BASE_URL;
 
 const ACCESS_TOKEN_KEY = 'hapa_access_token';
 const REFRESH_TOKEN_KEY = 'hapa_refresh_token';

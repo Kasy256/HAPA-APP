@@ -2,12 +2,12 @@ import { createClient } from '@supabase/supabase-js';
 import { decode } from 'base64-arraybuffer';
 import * as FileSystem from 'expo-file-system/legacy';
 
-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL as string;
-const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY as string;
+const SUPABASE_URL = process.env.EXPO_SUPABASE_URL as string;
+const SUPABASE_ANON_KEY = process.env.EXPO_SUPABASE_ANON_KEY as string;
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.warn(
-    '[Supabase] EXPO_PUBLIC_SUPABASE_URL or EXPO_PUBLIC_SUPABASE_ANON_KEY are not set. ' +
+    '[Supabase] EXPO_SUPABASE_URL or EXPO_SUPABASE_ANON_KEY are not set. ' +
     'Media uploads will fail until these are configured.',
   );
 }

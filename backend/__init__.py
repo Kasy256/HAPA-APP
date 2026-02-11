@@ -1,0 +1,2 @@
+"""HAPA backend package."""
+

@@ -13,7 +13,7 @@ export default {
         splash: {
             image: './assets/images/hapalogo.png',
             resizeMode: 'contain',
-            backgroundColor: '#000000'
+            backgroundColor: '#FFFFFF'
         },
         ios: {
             supportsTablet: true,
@@ -23,7 +23,7 @@ export default {
             package: 'com.hapa.app',
             adaptiveIcon: {
                 foregroundImage: './assets/images/hapalogo.png',
-                backgroundColor: '#000000'
+                backgroundColor: '#FFFFFF'
             },
             edgeToEdgeEnabled: true,
             predictiveBackGestureEnabled: false

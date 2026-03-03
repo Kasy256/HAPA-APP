@@ -1,11 +1,15 @@
 
 import { ScreenWrapper } from '@/components/ScreenWrapper';
 import { Colors } from '@/constants/Colors';
-import { apiFetch } from '@/lib/api';
+import { Ionicons } from '@expo/vector-icons';
+import { apiFetch, clearAuthTokens } from '@/lib/api';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+import { MediaPreview } from '@/components/MediaPreview';
 import { SkeletonBox, SkeletonCircle } from '@/components/Skeleton';
 
 type Venue = {
@@ -48,13 +52,18 @@ export default function VenueProfileScreen() {
         loadProfile();
     }, []);
 
-    // Track View
-    useEffect(() => {
-        if (venue?.id) {
-            // Fire and forget
-            apiFetch(`/api/venues/${venue.id}/view`, { method: 'POST', auth: true }).catch(() => { });
+    const handleSignOut = async () => {
+        await clearAuthTokens();
+        await AsyncStorage.removeItem('hapa_launch_preference');
+        while (router.canGoBack()) {
+            router.back();
         }
-    }, [venue?.id]);
+        router.replace('/');
+    };
+
+    // NOTE: We intentionally do NOT track a view here.
+    // This is the owner's own profile tab — self-views are excluded
+    // from analytics, just like Instagram and TikTok do.
 
     if (!venue && !loading) {
         return (
@@ -86,6 +95,17 @@ export default function VenueProfileScreen() {
                 ) : (
                     <View style={[styles.coverImage, { backgroundColor: 'rgba(255,255,255,0.06)' }]} />
                 )}
+
+                {/* Header Actions */}
+                <View style={styles.headerActions}>
+                    <TouchableOpacity
+                        style={styles.iconButton}
+                        activeOpacity={0.7}
+                        onPress={handleSignOut}
+                    >
+                        <Ionicons name="log-out-outline" size={24} color="white" />
+                    </TouchableOpacity>
+                </View>
 
                 <View style={styles.profileSection}>
                     <View style={styles.avatarContainer}>
@@ -121,7 +141,7 @@ export default function VenueProfileScreen() {
                                 <SkeletonBox width={120} height={12} borderRadius={8} />
                             ) : (
                                 <Text style={styles.infoValue}>
-                                    {venue?.area ? `${venue.area}, ${venue.city}` : venue?.city}
+                                    {venue?.area}, {venue?.city}
                                 </Text>
                             )}
                         </View>
@@ -145,7 +165,7 @@ export default function VenueProfileScreen() {
                             ))
                             : posts.map(post => (
                                 <View key={post.id} style={styles.gridItem}>
-                                    <Image source={{ uri: post.media_url }} style={styles.gridImage} />
+                                    <MediaPreview uri={post.media_url} style={styles.gridImage} />
                                 </View>
                             ))}
                     </View>
@@ -162,8 +182,19 @@ const styles = StyleSheet.create({
         height: 180,
     },
     profileSection: {
-        padding: 20, // Reduced from 24
-        marginTop: -60, // Pulled up more (was -50)
+        padding: 20,
+        marginTop: -60,
+    },
+    headerActions: {
+        position: 'absolute',
+        top: 50,
+        right: 20,
+        zIndex: 10,
+    },
+    iconButton: {
+        padding: 8,
+        backgroundColor: 'rgba(0,0,0,0.3)',
+        borderRadius: 20,
     },
     avatarContainer: {
         alignSelf: 'center',

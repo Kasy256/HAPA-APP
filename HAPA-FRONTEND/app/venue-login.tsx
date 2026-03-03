@@ -7,19 +7,36 @@ import React, { useState } from 'react';
 import { Alert, Image, KeyboardAvoidingView, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { PhoneInput } from '@/components/PhoneInput';
-import HapaLogo from '../assets/images/hapalogo.png';
+import HapaLogo from '../assets/images/hapa.png';
 
 export default function VenueLoginScreen() {
     const router = useRouter();
     const [phoneNumber, setPhoneNumber] = useState('+256 ');
     const [loading, setLoading] = useState(false);
 
+    const normalizePhoneNumber = (phone: string) => {
+        // 1. Remove all non-digits
+        let digits = phone.replace(/\D/g, '');
+
+        // 2. Handle common country codes + leading zero redundancy
+        // Example: 254 07... -> 254 7...
+        if (digits.startsWith('2540')) {
+            digits = '254' + digits.slice(4);
+        } else if (digits.startsWith('2560')) {
+            digits = '256' + digits.slice(4);
+        }
+
+        return digits;
+    };
+
     const handleSendOTP = async () => {
         if (loading) return;
 
-        // Validate phone number
-        if (phoneNumber.length < 5) {
-            Alert.alert('Error', 'Please enter a valid phone number');
+        const normalized = normalizePhoneNumber(phoneNumber);
+
+        // Validate phone number (should have country code + 9 digits)
+        if (normalized.length < 12) {
+            Alert.alert('Error', 'Please enter a valid phone number with country code');
             return;
         }
 
@@ -27,13 +44,13 @@ export default function VenueLoginScreen() {
             setLoading(true);
             const response = await apiFetch('/api/auth/request-otp', {
                 method: 'POST',
-                body: JSON.stringify({ phone_number: phoneNumber }),
+                body: JSON.stringify({ phone_number: normalized }),
             });
 
             router.push({
                 pathname: '/verify-otp',
                 params: {
-                    phone: phoneNumber,
+                    phone: normalized,
                     otp: response.otp // Pass the OTP to the next screen if available
                 },
             });

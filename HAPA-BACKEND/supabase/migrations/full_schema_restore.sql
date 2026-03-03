@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS public.otp_codes (
 -- 3. Create venues table
 CREATE TABLE IF NOT EXISTS public.venues (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    owner_id UUID REFERENCES public.users(id),
+    owner_id UUID REFERENCES public.users(id) UNIQUE,
     name TEXT NOT NULL,
     type TEXT NOT NULL,
     city TEXT NOT NULL,
@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS public.venues (
     address TEXT,
     lat FLOAT8,
     lng FLOAT8,
+    place_id TEXT,
+    formatted_address TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     metrics JSONB DEFAULT '{"likes": 0, "views": 0}'::jsonb

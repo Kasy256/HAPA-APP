@@ -7,9 +7,11 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Dimensions, FlatList, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
+import { MediaPreview } from '@/components/MediaPreview';
 import { SkeletonBox, SkeletonCircle } from '@/components/Skeleton';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, getTransformedImageUrl, isVideoUrl } from '@/lib/api';
 import { getTimeAgo } from '@/lib/time';
+import { openDirections } from '@/lib/directions';
 import { getVenueStatusText, isVenueOpen } from '@/lib/venue';
 
 const { width } = Dimensions.get('window');
@@ -22,6 +24,9 @@ export default function PublicVenueProfileScreen() {
     const [loading, setLoading] = useState(true);
     const [venue, setVenue] = useState<any>(null);
     const [posts, setPosts] = useState<any[]>([]);
+
+    // Guard: ensures we only track one view per screen mount, not on re-renders
+    const viewTracked = useRef(false);
 
     const venueId = useMemo(() => (Array.isArray(id) ? id[0] : (id as string)), [id]);
 
@@ -41,6 +46,18 @@ export default function PublicVenueProfileScreen() {
         };
         load();
     }, [venueId]);
+
+    // Track venue profile view — fires once after venue loads
+    // Works for both real users and anonymous users (they have a stable Supabase UUID from boot)
+    // Self-view and 24h deduplication are enforced at the DB level
+    useEffect(() => {
+        if (venue?.id && !viewTracked.current) {
+            viewTracked.current = true;
+            apiFetch(`/api/venues/${venue.id}/view`, { method: 'POST', auth: true }).catch(() => {
+                // Non-critical — silently fail if view tracking fails
+            });
+        }
+    }, [venue?.id]);
 
     const images = (venue?.images?.length ? venue.images : []) as string[];
 
@@ -68,7 +85,11 @@ export default function PublicVenueProfileScreen() {
                             onViewableItemsChanged={onViewableItemsChanged}
                             viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
                             renderItem={({ item }) => (
-                                <Image source={{ uri: item }} style={styles.slideImage} resizeMode="cover" />
+                                <Image
+                                    source={{ uri: getTransformedImageUrl(item, 1000, 90) }}
+                                    style={styles.slideImage}
+                                    resizeMode="cover"
+                                />
                             )}
                         />
                     ) : (
@@ -76,7 +97,11 @@ export default function PublicVenueProfileScreen() {
                     )}
 
                     {/* Header Gradient Overlay */}
-                    <LinearGradient colors={['rgba(0,0,0,0.6)', 'transparent', 'transparent']} style={styles.headerGradient} />
+                    <LinearGradient
+                        colors={['rgba(0,0,0,0.6)', 'transparent', 'transparent']}
+                        style={styles.headerGradient}
+                        pointerEvents="none"
+                    />
 
                     {/* Back Button */}
                     <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
@@ -100,8 +125,9 @@ export default function PublicVenueProfileScreen() {
                                 <SkeletonCircle size={80} />
                             ) : (
                                 <Image
-                                    source={{ uri: venue?.images?.[0] }}
+                                    source={{ uri: getTransformedImageUrl(venue?.images?.[0], 400, 90) }}
                                     style={[styles.avatar, { backgroundColor: 'rgba(255,255,255,0.06)' }]}
+                                    resizeMode="cover"
                                 />
                             )}
                             <View style={styles.headerInfo}>
@@ -113,10 +139,8 @@ export default function PublicVenueProfileScreen() {
                                     </>
                                 ) : (
                                     <>
-                                        <Text style={styles.venueName}>{venue?.name ?? 'Venue'}</Text>
-                                        <Text style={styles.category}>
-                                            {venue?.type ?? 'Venue'} • {venue?.area ?? ''}
-                                        </Text>
+                                        <Text style={styles.venueName} numberOfLines={1}>{venue?.name ?? 'Venue'}</Text>
+
                                     </>
                                 )}
 
@@ -140,7 +164,10 @@ export default function PublicVenueProfileScreen() {
                                 <Ionicons name="call-outline" size={20} color="white" />
                                 <Text style={styles.actionText}>Call</Text>
                             </TouchableOpacity>
-                            <TouchableOpacity style={styles.actionButton}>
+                            <TouchableOpacity
+                                style={styles.actionButton}
+                                onPress={() => openDirections(venue?.lat, venue?.lng, venue?.name)}
+                            >
                                 <Ionicons name="navigate-outline" size={20} color="white" />
                                 <Text style={styles.actionText}>Directions</Text>
                             </TouchableOpacity>
@@ -181,7 +208,7 @@ export default function PublicVenueProfileScreen() {
                                     activeOpacity={0.9}
                                     onPress={() => router.push(`/story/${p.id}`)}
                                 >
-                                    <Image source={{ uri: p.media_url }} style={styles.postImage} />
+                                    <MediaPreview uri={isVideoUrl(p.media_url) ? p.media_url : getTransformedImageUrl(p.media_url, 400)} style={styles.postImage} />
                                     <LinearGradient
                                         colors={['transparent', 'rgba(0,0,0,0.8)']}
                                         style={styles.postGradient}
@@ -221,9 +248,11 @@ const styles = StyleSheet.create({
     slideImage: {
         width: width,
         height: HEADER_HEIGHT,
+        backgroundColor: '#1a1a1a',
     },
     headerGradient: {
         ...StyleSheet.absoluteFillObject,
+        zIndex: 1,
     },
     backButton: {
         position: 'absolute',

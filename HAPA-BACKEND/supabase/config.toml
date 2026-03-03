@@ -1,0 +1,16 @@
+project_id = "oflazyvrvlejtdbzdwbq"
+
+[functions.auth]
+verify_jwt = false
+
+[functions.discovery]
+verify_jwt = false
+
+[functions.google-maps]
+verify_jwt = false
+
+[functions.posts]
+verify_jwt = false
+
+[functions.venues]
+verify_jwt = false

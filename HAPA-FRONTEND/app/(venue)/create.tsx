@@ -1,13 +1,16 @@
 
 import { Colors } from '@/constants/Colors';
+import { useUpload } from '@/contexts/UploadContext';
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
+import * as Haptics from 'expo-haptics';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import React, { useCallback, useRef, useState } from 'react';
-import { Alert, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { apiFetch } from '@/lib/api';
+import { uploadMedia } from '@/lib/supabaseClient';
 
 function VideoPreview({ uri }: { uri: string }) {
     const player = useVideoPlayer(uri, player => {
@@ -37,6 +40,7 @@ function VideoPreview({ uri }: { uri: string }) {
 
 export default function CreatePostScreen() {
     const router = useRouter();
+    const { startUpload, uploadState } = useUpload();
     const cameraRef = useRef<CameraView>(null);
     const [mode, setMode] = useState<'Photo' | 'Video'>('Photo');
     const [permission, requestPermission] = useCameraPermissions();
@@ -46,7 +50,9 @@ export default function CreatePostScreen() {
 
     // Preview State
     const [capturedMedia, setCapturedMedia] = useState<{ uri: string; type: 'photo' | 'video' } | null>(null);
-    const [posting, setPosting] = useState(false);
+
+    // Whether we are currently mid-upload (prevents double-tapping Post)
+    const isUploading = uploadState === 'uploading';
 
 
 
@@ -123,31 +129,54 @@ export default function CreatePostScreen() {
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                        style={styles.postButton}
-                        onPress={async () => {
-                            if (posting || !capturedMedia) return;
-                            try {
-                                setPosting(true);
-                                const mediaType = capturedMedia.type === 'photo' ? 'image' : 'video';
-                                await apiFetch('/api/posts', {
-                                    method: 'POST',
-                                    auth: true,
-                                    body: JSON.stringify({
-                                        media_type: mediaType,
-                                        media_url: capturedMedia.uri,
-                                    }),
-                                });
-                                // Clear state before navigating back
-                                setCapturedMedia(null);
-                                router.back();
-                            } catch (error: any) {
-                                Alert.alert('Error', error.message || 'Failed to post vibe');
-                            } finally {
-                                setPosting(false);
-                            }
+                        style={[styles.postButton, isUploading && { opacity: 0.5 }]}
+                        onPress={() => {
+                            if (isUploading || !capturedMedia) return;
+
+                            const mediaType = capturedMedia.type === 'photo' ? 'image' : 'video';
+                            const mediaUri = capturedMedia.uri;
+
+                            // ✨ INSTAGRAM PATTERN:
+                            // 1. Haptic feedback so the tap feels instant
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+                            // 2. Navigate back IMMEDIATELY — don't wait for upload
+                            setCapturedMedia(null);
+                            router.back();
+
+                            // 3. Upload runs in the background via UploadContext.
+                            //    GlobalUploadProgress shows a progress bar at the top.
+                            startUpload(
+                                {
+                                    id: `pending-${Date.now()}`,
+                                    media_url: mediaUri,
+                                    media_type: mediaType,
+                                    created_at: new Date().toISOString(),
+                                    isPending: true,
+                                },
+                                async () => {
+                                    console.log(`[CreatePost] Background upload starting: ${mediaUri}`);
+                                    const publicUrl = await uploadMedia(mediaUri, {
+                                        folder: 'posts',
+                                        type: mediaType
+                                    });
+                                    console.log(`[CreatePost] Upload done. Creating record...`);
+                                    await apiFetch('/api/posts', {
+                                        method: 'POST',
+                                        auth: true,
+                                        body: JSON.stringify({
+                                            media_type: mediaType,
+                                            media_url: publicUrl,
+                                        }),
+                                    });
+                                    console.log(`[CreatePost] Post record created.`);
+                                    // Haptic on success
+                                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                }
+                            );
                         }}
                     >
-                        <Text style={styles.postButtonText}>{posting ? 'Posting...' : 'Post'}</Text>
+                        <Text style={styles.postButtonText}>{isUploading ? 'Posting...' : 'Post'}</Text>
                     </TouchableOpacity>
                 </View>
 

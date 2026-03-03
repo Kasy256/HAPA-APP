@@ -7,7 +7,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Dimensions, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { apiFetch } from '@/lib/api';
+import { apiFetch, isVideoUrl } from '@/lib/api';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
@@ -22,6 +22,7 @@ export default function StoryScreen() {
     const [currentIndex, setCurrentIndex] = useState(0);
     const [venue, setVenue] = useState<any>(null);
     const [progress, setProgress] = useState(0);
+    const [videoBuffering, setVideoBuffering] = useState(false);
 
     const postId = useMemo(() => (Array.isArray(id) ? id[0] : (id as string)), [id]);
     const vId = useMemo(() => (Array.isArray(venueId) ? venueId[0] : (venueId as string)), [venueId]);
@@ -29,69 +30,101 @@ export default function StoryScreen() {
     // Load Data
     useEffect(() => {
         const load = async () => {
-            try {
-                if (vId) {
-                    // Fetch all stories for this venue
-                    const data = await apiFetch(`/api/posts/venue/${vId}`);
-                    const allPosts = data.posts || [];
+            // If we have a single post ID, fetch it immediately to show content fast
+            if (!vId && postId) {
+                try {
+                    const data = await apiFetch(`/api/posts/${postId}`);
+                    setPosts([data.post]);
+                    setVenue(data.venue);
+                    setLoading(false);
+                } catch (e) {
+                    console.error("Failed to load single story", e);
+                    router.back();
+                }
+                return;
+            }
 
+            // If we have a venueId, we need all posts but we should still be fast
+            if (vId) {
+                try {
+                    // Fetch post list and venue in parallel
+                    const [postsData, venueData] = await Promise.all([
+                        apiFetch(`/api/posts/venue/${vId}`),
+                        apiFetch(`/api/venues/${vId}`)
+                    ]);
+
+                    const allPosts = postsData.posts || [];
                     if (allPosts.length === 0) {
                         router.back();
                         return;
                     }
 
-                    // Find index of the clicked post
                     const idx = allPosts.findIndex((p: any) => p.id === postId);
                     setPosts(allPosts);
                     setCurrentIndex(idx >= 0 ? idx : 0);
-
-                    const venueData = await apiFetch(`/api/venues/${vId}`);
                     setVenue(venueData.venue);
-                } else {
-                    const data = await apiFetch(`/api/posts/${postId}`);
-                    setPosts([data.post]);
-                    setCurrentIndex(0);
-                    setVenue(data.venue);
+                } catch (e) {
+                    console.error("Failed to load venue stories", e);
+                    router.back();
+                } finally {
+                    setLoading(false);
                 }
-            } catch (e) {
-                console.error("Failed to load story", e);
-                router.back();
-            } finally {
-                setLoading(false);
             }
         };
         load();
     }, [postId, vId]);
 
     const currentPost = posts[currentIndex];
+    const currentIsVideo = currentPost?.media_type === 'video' || isVideoUrl(currentPost?.media_url);
 
     // Video Player
-    const player = useVideoPlayer(currentPost?.media_url, player => {
-        if (currentPost?.media_type === 'video') {
+    const player = useVideoPlayer(currentPost?.media_url ?? '', player => {
+        if (currentIsVideo) {
             player.loop = true;
             player.play();
         }
     });
 
+    // Track buffering state so we can show a spinner and pause auto-progress
     useEffect(() => {
-        if (currentPost?.media_type === 'video') {
-            player.replaceAsync(currentPost.media_url);
+        if (!currentIsVideo) {
+            setVideoBuffering(false);
+            return;
+        }
+        const sub = player.addListener('statusChange', (ev: any) => {
+            if (ev.status === 'loading') {
+                setVideoBuffering(true);
+            } else {
+                setVideoBuffering(false);
+            }
+        });
+        return () => sub.remove();
+    }, [player, currentIsVideo]);
+
+    useEffect(() => {
+        if (currentPost?.media_url && currentIsVideo) {
+            setVideoBuffering(true);
+            player.replace(currentPost.media_url);
+            player.loop = true;
             player.play();
         } else {
             player.pause();
         }
-    }, [currentPost, player]);
+    }, [currentPost?.media_url, currentIsVideo]);
 
-    // Auto Progress Timer
+    // Auto Progress Timer — pauses while video is buffering
     useEffect(() => {
         if (loading || !currentPost) return;
 
         setProgress(0);
         const intervalMs = 100;
-        const durationMs = currentPost.media_type === 'video' ? 10000 : 5000;
+        const durationMs = currentIsVideo ? 10000 : 5000;
         const step = (intervalMs / durationMs) * 100;
 
         const timer = setInterval(() => {
+            // Don't advance progress while video is buffering
+            if (videoBuffering) return;
+
             setProgress(old => {
                 if (old >= 100) {
                     clearInterval(timer);
@@ -102,10 +135,9 @@ export default function StoryScreen() {
         }, intervalMs);
 
         return () => clearInterval(timer);
-    }, [currentIndex, loading, currentPost]);
+    }, [currentIndex, loading, currentPost, videoBuffering]);
 
     // Handle Progress Completion (Navigation)
-    // We use a separate effect to avoid "updating component while rendering" error
     useEffect(() => {
         if (progress >= 100) {
             handleNext();
@@ -161,11 +193,10 @@ export default function StoryScreen() {
             await apiFetch(`/api/posts/${currentPost.id}/like`, { method: 'POST', auth: true });
         } catch (error) {
             console.error("Failed to like post", error);
-            // Revert on error (optional)
         }
     };
 
-    if (loading || !currentPost) {
+    if (!currentPost && loading) {
         return (
             <View style={styles.container}>
                 <ActivityIndicator size="large" color="white" style={{ marginTop: 100 }} />
@@ -173,16 +204,25 @@ export default function StoryScreen() {
         );
     }
 
+    if (!currentPost && !loading) return null;
+
     return (
         <View style={styles.container}>
             {/* Media Content */}
-            {currentPost.media_type === 'video' ? (
-                <VideoView
-                    style={styles.image}
-                    player={player}
-                    contentFit="cover"
-                    nativeControls={false}
-                />
+            {currentIsVideo ? (
+                <View style={styles.image}>
+                    <VideoView
+                        style={{ width: '100%', height: '100%' }}
+                        player={player}
+                        contentFit="cover"
+                        nativeControls={false}
+                    />
+                    {videoBuffering && (
+                        <View style={styles.bufferingOverlay}>
+                            <ActivityIndicator size="large" color="white" />
+                        </View>
+                    )}
+                </View>
             ) : (
                 <Image source={{ uri: currentPost.media_url }} style={styles.image} resizeMode="cover" />
             )}
@@ -372,5 +412,11 @@ const styles = StyleSheet.create({
         textShadowColor: 'rgba(0,0,0,0.8)',
         textShadowOffset: { width: 0, height: 1 },
         textShadowRadius: 4,
+    },
+    bufferingOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        justifyContent: 'center',
+        alignItems: 'center',
+        backgroundColor: 'rgba(0,0,0,0.3)',
     },
 });

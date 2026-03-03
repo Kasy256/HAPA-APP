@@ -4,13 +4,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Image, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { TimePickerField } from '@/components/TimePickerField';
 import { apiFetch, getAccessToken } from '@/lib/api';
-import { uploadImage } from '@/lib/supabaseClient';
-import HapaLogo from '../assets/images/hapalogo.png';
+import { uploadMedia } from '@/lib/supabaseClient';
+import * as Location from 'expo-location';
+import MapView, { Marker } from 'react-native-maps';
+import HapaLogo from '../assets/images/hapa.png';
 
 
 
@@ -22,6 +25,11 @@ export default function VenueOnboardingScreen() {
         types: [] as string[],
         city: '',
         area: '',
+        address: '',
+        lat: 0,
+        lng: 0,
+        place_id: '',
+        formatted_address: '',
         images: [] as string[],
         working_hours: {
             monday: { open: '09:00', close: '22:00' },
@@ -34,12 +42,67 @@ export default function VenueOnboardingScreen() {
         } as Record<string, { open: string; close: string } | null>,
     });
 
+    const [searchQuery, setSearchQuery] = useState('');
+    const [suggestions, setSuggestions] = useState<any[]>([]);
+    const [mapRegion, setMapRegion] = useState({
+        latitude: -1.2921, // Default Nairobi
+        longitude: 36.8219,
+        latitudeDelta: 0.01,
+        longitudeDelta: 0.01,
+    });
+    const [showMap, setShowMap] = useState(false);
+    const mapRef = React.useRef<MapView>(null);
+
     const totalSteps = 4;
 
-    const [citySuggestions, setCitySuggestions] = useState<any[]>([]);
-    const [areaSuggestions, setAreaSuggestions] = useState<any[]>([]);
-
     const [submitting, setSubmitting] = useState(false);
+    const [draftRestored, setDraftRestored] = useState(false);
+
+    const DRAFT_KEY = 'hapa_onboarding_draft';
+
+    // --- DRAFT PERSISTENCE: Restore on mount ---
+    useEffect(() => {
+        (async () => {
+            try {
+                const raw = await AsyncStorage.getItem(DRAFT_KEY);
+                if (raw) {
+                    const draft = JSON.parse(raw);
+                    if (draft.formData && draft.step) {
+                        Alert.alert(
+                            'Resume Draft?',
+                            `You have an unfinished venue profile (Step ${draft.step}/${totalSteps}). Would you like to continue?`,
+                            [
+                                {
+                                    text: 'Start Fresh',
+                                    style: 'destructive',
+                                    onPress: () => AsyncStorage.removeItem(DRAFT_KEY),
+                                },
+                                {
+                                    text: 'Resume',
+                                    onPress: () => {
+                                        setFormData(draft.formData);
+                                        setStep(draft.step);
+                                        setDraftRestored(true);
+                                    },
+                                },
+                            ],
+                        );
+                    }
+                }
+            } catch { /* ignore corrupt drafts */ }
+        })();
+    }, []);
+
+    // --- DRAFT PERSISTENCE: Auto-save on change ---
+    useEffect(() => {
+        // Don't save until form has meaningful data
+        if (!formData.name && step === 1) return;
+        AsyncStorage.setItem(DRAFT_KEY, JSON.stringify({ formData, step })).catch(() => { });
+    }, [formData, step]);
+
+    const clearDraft = useCallback(() => {
+        AsyncStorage.removeItem(DRAFT_KEY).catch(() => { });
+    }, []);
 
     // Guard: ensure user is logged in (has JWT) before allowing onboarding
     useEffect(() => {
@@ -67,8 +130,8 @@ export default function VenueOnboardingScreen() {
                 return false;
             }
         } else if (step === 2) {
-            if (!formData.city.trim() || !formData.area.trim()) {
-                Alert.alert('Missing info', 'Please fill in both city and area.');
+            if (!formData.lat || !formData.lng) {
+                Alert.alert('Missing info', 'Please select a location on the map or search for your venue.');
                 return false;
             }
         } else if (step === 3) {
@@ -110,16 +173,30 @@ export default function VenueOnboardingScreen() {
                     categories: formData.types,
                     city: formData.city,
                     area: formData.area,
+                    address: formData.address || formData.formatted_address,
+                    lat: formData.lat,
+                    lng: formData.lng,
+                    place_id: formData.place_id,
+                    formatted_address: formData.formatted_address,
                     images: formData.images,
                     working_hours: formData.working_hours,
                 }),
             });
 
             Alert.alert('Success', 'Venue profile created successfully.', [
-                { text: 'OK', onPress: () => router.replace('/(venue)') },
+                { text: 'OK', onPress: () => { clearDraft(); router.replace('/(venue)'); } },
             ]);
         } catch (error: any) {
-            Alert.alert('Error', error.message || 'Failed to create venue profile');
+            // 409 = venue already exists for this account
+            if (error?.status === 409 || error?.message?.includes('already exists')) {
+                Alert.alert(
+                    'Venue Already Exists',
+                    'You already have a venue profile. Redirecting to your dashboard.',
+                    [{ text: 'OK', onPress: () => router.replace('/(venue)') }]
+                );
+            } else {
+                Alert.alert('Error', error.message || 'Failed to create venue profile');
+            }
         } finally {
             setSubmitting(false);
         }
@@ -130,25 +207,73 @@ export default function VenueOnboardingScreen() {
         else router.back();
     };
 
-    const fetchLocationSuggestions = async (text: string, field: 'city' | 'area') => {
-        const trimmed = text.trim();
-        if (trimmed.length < 3) {
-            if (field === 'city') setCitySuggestions([]);
-            if (field === 'area') setAreaSuggestions([]);
+    const fetchSuggestions = async (text: string) => {
+        setSearchQuery(text);
+        if (text.trim().length < 3) {
+            setSuggestions([]);
             return;
         }
         try {
-            const res = await apiFetch(`/api/locations/suggest?q=${encodeURIComponent(trimmed)}`);
-            const suggestions = res.suggestions || [];
-            if (field === 'city') {
-                setCitySuggestions(suggestions);
-            } else {
-                setAreaSuggestions(suggestions);
-            }
+            const res = await apiFetch(`/api/locations/suggest/autocomplete?q=${encodeURIComponent(text)}`);
+            setSuggestions(res.suggestions || []);
         } catch {
-            if (field === 'city') setCitySuggestions([]);
-            if (field === 'area') setAreaSuggestions([]);
+            setSuggestions([]);
         }
+    };
+
+    const handleSelectSuggestion = async (item: any) => {
+        try {
+            const res = await apiFetch(`/api/locations/suggest/details?place_id=${item.id}`);
+            if (res.lat && res.lng) {
+                const newLocation = {
+                    lat: res.lat,
+                    lng: res.lng,
+                    place_id: res.place_id,
+                    formatted_address: res.formatted_address,
+                    city: res.city || formData.city,
+                    area: res.area || formData.area,
+                    address: res.name,
+                };
+                setFormData(prev => ({ ...prev, ...newLocation }));
+                const newRegion = {
+                    latitude: res.lat,
+                    longitude: res.lng,
+                    latitudeDelta: 0.005,
+                    longitudeDelta: 0.005,
+                };
+                setMapRegion(newRegion);
+                mapRef.current?.animateToRegion(newRegion, 1000);
+                setShowMap(true);
+                setSearchQuery(item.description);
+                setSuggestions([]);
+            }
+        } catch (error) {
+            Alert.alert('Error', 'Failed to fetch location details.');
+        }
+    };
+
+    const handleGetCurrentLocation = async () => {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+            Alert.alert('Permission denied', 'Location permission is required to find your current position.');
+            return;
+        }
+
+        const location = await Location.getCurrentPositionAsync({});
+        const coords = {
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude,
+        };
+
+        setFormData(prev => ({ ...prev, lat: coords.latitude, lng: coords.longitude }));
+        const newRegion = {
+            ...coords,
+            latitudeDelta: 0.005,
+            longitudeDelta: 0.005,
+        };
+        setMapRegion(newRegion);
+        mapRef.current?.animateToRegion(newRegion, 1000);
+        setShowMap(true);
     };
 
     const pickImages = async () => {
@@ -167,7 +292,7 @@ export default function VenueOnboardingScreen() {
 
             const uploadedUrls: string[] = [];
             for (const asset of result.assets) {
-                const url = await uploadImage(asset.uri, { bucket: 'media', folder: 'venues' });
+                const url = await uploadMedia(asset.uri, { bucket: 'media', folder: 'venues' });
                 uploadedUrls.push(url);
             }
 
@@ -267,83 +392,81 @@ export default function VenueOnboardingScreen() {
 
                     {step === 2 && (
                         <View style={styles.stepContainer}>
-                            <Text style={styles.heading}>Location details</Text>
-                            <Text style={styles.subHeading}>Help people find you easily.</Text>
+                            <Text style={styles.heading}>Where is it?</Text>
+                            <Text style={styles.subHeading}>Search for your venue or drop a pin on the map.</Text>
 
                             <View style={styles.inputGroup}>
-                                <Text style={styles.label}>City</Text>
-                                <TextInput
-                                    style={styles.input}
-                                    placeholder="e.g. City"
-                                    placeholderTextColor="rgba(255,255,255,0.4)"
-                                    value={formData.city}
-                                    onChangeText={(t) => {
-                                        setFormData({ ...formData, city: t });
-                                        fetchLocationSuggestions(t, 'city');
-                                    }}
-                                    autoFocus
-                                />
-                                {citySuggestions.length > 0 && (
+                                <View style={styles.searchContainer}>
+                                    <TextInput
+                                        style={styles.input}
+                                        placeholder="Search venue name or address..."
+                                        placeholderTextColor="rgba(255,255,255,0.4)"
+                                        value={searchQuery}
+                                        onChangeText={fetchSuggestions}
+                                        autoFocus
+                                    />
+                                    <TouchableOpacity
+                                        style={styles.locationIcon}
+                                        onPress={handleGetCurrentLocation}
+                                    >
+                                        <Ionicons name="locate" size={24} color={Colors.cta.primary} />
+                                    </TouchableOpacity>
+                                </View>
+
+                                {suggestions.length > 0 && (
                                     <View style={styles.suggestionList}>
-                                        {citySuggestions.map((s: any) => (
+                                        {suggestions.map((s: any) => (
                                             <TouchableOpacity
                                                 key={s.id}
                                                 style={styles.suggestionItem}
-                                                onPress={() => {
-                                                    setFormData({ ...formData, city: s.name });
-                                                    setCitySuggestions([]);
-                                                }}
+                                                onPress={() => handleSelectSuggestion(s)}
                                             >
                                                 <Text style={styles.suggestionText}>{s.name}</Text>
-                                                {!!s.address && (
-                                                    <Text style={styles.suggestionSubText} numberOfLines={1}>
-                                                        {s.address}
-                                                    </Text>
-                                                )}
+                                                <Text style={styles.suggestionSubText} numberOfLines={1}>
+                                                    {s.address}
+                                                </Text>
                                             </TouchableOpacity>
                                         ))}
                                     </View>
                                 )}
                             </View>
 
-                            <View style={styles.inputGroup}>
-                                <Text style={styles.label}>Area / Neighborhood</Text>
-                                <TextInput
-                                    style={styles.input}
-                                    placeholder="e.g. Neighborhood"
-                                    placeholderTextColor="rgba(255,255,255,0.4)"
-                                    value={formData.area}
-                                    onChangeText={(t) => {
-                                        setFormData({ ...formData, area: t });
-                                        fetchLocationSuggestions(t, 'area');
-                                    }}
-                                />
-                                {areaSuggestions.length > 0 && (
-                                    <View style={styles.suggestionList}>
-                                        {areaSuggestions.map((s: any) => (
-                                            <TouchableOpacity
-                                                key={s.id}
-                                                style={styles.suggestionItem}
-                                                onPress={() => {
-                                                    setFormData({
-                                                        ...formData,
-                                                        area: s.name,
-                                                        city: formData.city || s.address,
-                                                    });
-                                                    setAreaSuggestions([]);
-                                                }}
-                                            >
-                                                <Text style={styles.suggestionText}>{s.name}</Text>
-                                                {!!s.address && (
-                                                    <Text style={styles.suggestionSubText} numberOfLines={1}>
-                                                        {s.address}
-                                                    </Text>
-                                                )}
-                                            </TouchableOpacity>
-                                        ))}
+                            {(showMap || formData.lat !== 0) && (
+                                <View style={styles.mapWrapper}>
+                                    <MapView
+                                        ref={mapRef}
+                                        style={styles.map}
+                                        initialRegion={mapRegion}
+                                        onRegionChangeComplete={(region) => {
+                                            if (Math.abs(region.latitude - mapRegion.latitude) > 0.0001) {
+                                                setMapRegion(region);
+                                                // Sync centered location
+                                                setFormData(prev => ({
+                                                    ...prev,
+                                                    lat: region.latitude,
+                                                    lng: region.longitude
+                                                }));
+                                            }
+                                        }}
+                                    />
+                                    <View style={styles.centerMarkerContainer} pointerEvents="none">
+                                        <Ionicons name="location" size={40} color={Colors.cta.primary} />
                                     </View>
-                                )}
-                            </View>
+                                    <View style={styles.mapOverlay}>
+                                        <Text style={styles.mapHint}>Drag pin to refine location</Text>
+                                    </View>
+                                </View>
+                            )}
+
+                            {!showMap && formData.lat === 0 && (
+                                <TouchableOpacity
+                                    style={styles.manualEntryButton}
+                                    onPress={() => setShowMap(true)}
+                                >
+                                    <Ionicons name="map-outline" size={20} color="white" />
+                                    <Text style={styles.manualEntryText}>Set location manually on map</Text>
+                                </TouchableOpacity>
+                            )}
                         </View>
                     )}
 
@@ -468,7 +591,7 @@ export default function VenueOnboardingScreen() {
                     </BlurView>
                 </View>
             </KeyboardAvoidingView>
-        </ScreenWrapper>
+        </ScreenWrapper >
     );
 }
 
@@ -479,7 +602,7 @@ const styles = StyleSheet.create({
     header: {
         flexDirection: 'row',
         alignItems: 'center',
-        paddingHorizontal: 16, // iOS margin
+        paddingHorizontal: 16,
         paddingTop: 16,
         gap: 16,
     },
@@ -506,7 +629,7 @@ const styles = StyleSheet.create({
         fontWeight: '600',
     },
     scrollContent: {
-        padding: 16, // iOS margin
+        padding: 16,
         paddingBottom: 100,
     },
     brandHeader: {
@@ -524,9 +647,6 @@ const styles = StyleSheet.create({
         color: Colors.text.primary,
         letterSpacing: 2,
     },
-    stepContainer: {
-        gap: 10,
-    },
     heading: {
         fontSize: 32,
         fontWeight: '800',
@@ -534,7 +654,7 @@ const styles = StyleSheet.create({
         letterSpacing: -0.5,
     },
     subHeading: {
-        fontSize: 17, // iOS Body
+        fontSize: 17,
         color: 'rgba(255,255,255,0.6)',
         marginBottom: 24,
         lineHeight: 22,
@@ -551,10 +671,10 @@ const styles = StyleSheet.create({
     },
     input: {
         backgroundColor: 'rgba(255,255,255,0.08)',
-        borderRadius: 12, // iOS standard radius
+        borderRadius: 12,
         padding: 16,
         color: 'white',
-        fontSize: 17, // iOS body size
+        fontSize: 17,
         borderWidth: 1,
         borderColor: 'rgba(255,255,255,0.1)',
     },
@@ -663,7 +783,7 @@ const styles = StyleSheet.create({
     nextButton: {
         backgroundColor: Colors.cta.primary,
         paddingVertical: 16,
-        borderRadius: 12, // iOS standard radius
+        borderRadius: 12,
         flexDirection: 'row',
         justifyContent: 'center',
         alignItems: 'center',
@@ -675,10 +795,9 @@ const styles = StyleSheet.create({
     },
     nextButtonText: {
         color: 'white',
-        fontSize: 17, // iOS body bold
+        fontSize: 17,
         fontWeight: 'bold',
     },
-    // Working Hours Styles
     hoursContainer: {
         gap: 16,
         marginTop: 8,
@@ -729,5 +848,71 @@ const styles = StyleSheet.create({
         fontSize: 18,
         fontWeight: '600',
         marginTop: 20,
+    },
+    stepContainer: {
+        gap: 10,
+    },
+    searchContainer: {
+        position: 'relative',
+        justifyContent: 'center',
+    },
+    locationIcon: {
+        position: 'absolute',
+        right: 16,
+        padding: 4,
+    },
+    mapWrapper: {
+        height: 300,
+        borderRadius: 16,
+        overflow: 'hidden',
+        marginTop: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.1)',
+    },
+    map: {
+        width: '100%',
+        height: '100%',
+    },
+    centerMarkerContainer: {
+        position: 'absolute',
+        top: '50%',
+        left: '50%',
+        marginLeft: -20,
+        marginTop: -38,
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 10,
+    },
+    mapOverlay: {
+        position: 'absolute',
+        bottom: 12,
+        left: 12,
+        right: 12,
+        backgroundColor: 'rgba(0,0,0,0.7)',
+        padding: 8,
+        borderRadius: 8,
+        alignItems: 'center',
+    },
+    mapHint: {
+        color: 'white',
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    manualEntryButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        padding: 16,
+        backgroundColor: 'rgba(255,255,255,0.05)',
+        borderRadius: 12,
+        marginTop: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.1)',
+    },
+    manualEntryText: {
+        color: 'white',
+        fontSize: 15,
+        fontWeight: '600',
     },
 });

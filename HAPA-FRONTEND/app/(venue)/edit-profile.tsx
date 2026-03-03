@@ -2,13 +2,16 @@ import { ScreenWrapper } from '@/components/ScreenWrapper';
 import { Colors } from '@/constants/Colors';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { Alert, Image, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import MapView, { Marker } from 'react-native-maps';
 
 import { PhoneInput } from '@/components/PhoneInput';
 import { TimePickerField } from '@/components/TimePickerField';
 import { apiFetch } from '@/lib/api';
+import { uploadMedia } from '@/lib/supabaseClient';
 
 const CATEGORIES = ['Restaurant', 'Bar', 'Club', 'Cafe', 'Live Music', 'Lounge', 'Outdoor', 'Rooftop'];
 
@@ -17,7 +20,13 @@ export default function EditProfileScreen() {
     const [venueId, setVenueId] = useState<string | null>(null);
     const [name, setName] = useState('');
     const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
-    const [location, setLocation] = useState(''); // "Area, City"
+    const [locationInput, setLocationInput] = useState('');
+    const [lat, setLat] = useState<number>(0);
+    const [lng, setLng] = useState<number>(0);
+    const [city, setCity] = useState('');
+    const [area, setArea] = useState('');
+    const [placeId, setPlaceId] = useState<string>('');
+    const [formattedAddress, setFormattedAddress] = useState<string>('');
     const [contact, setContact] = useState('');
 
     // Working Hours State
@@ -34,7 +43,16 @@ export default function EditProfileScreen() {
     // Images State
     const [slideshowImages, setSlideshowImages] = useState<string[]>([]);
     const [avatar, setAvatar] = useState<string>('');
-    const [locationSuggestions, setLocationSuggestions] = useState<any[]>([]);
+    const [suggestions, setSuggestions] = useState<any[]>([]);
+    const [mapRegion, setMapRegion] = useState({
+        latitude: -1.2921,
+        longitude: 36.8219,
+        latitudeDelta: 0.01,
+        longitudeDelta: 0.01,
+    });
+    const [showMap, setShowMap] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
+    const mapRef = React.useRef<MapView>(null);
 
     useEffect(() => {
         const load = async () => {
@@ -45,8 +63,28 @@ export default function EditProfileScreen() {
                 setVenueId(v.id);
                 setName(v.name ?? '');
                 setSelectedCategories(v.categories ?? []);
-                const loc = [v.area, v.city].filter(Boolean).join(', ');
-                setLocation(loc);
+
+                // Location loading
+                setLat(v.lat || 0);
+                setLng(v.lng || 0);
+                setCity(v.city || '');
+                setArea(v.area || '');
+                setPlaceId(v.place_id || '');
+                setFormattedAddress(v.formatted_address || '');
+
+                const locDisplay = v.formatted_address || [v.area, v.city].filter(Boolean).join(', ');
+                setLocationInput(locDisplay);
+
+                if (v.lat && v.lng) {
+                    setMapRegion({
+                        latitude: v.lat,
+                        longitude: v.lng,
+                        latitudeDelta: 0.005,
+                        longitudeDelta: 0.005,
+                    });
+                    setShowMap(true);
+                }
+
                 setContact(v.contact_phone ?? '');
                 setSlideshowImages(v.images ?? []);
                 setAvatar((v.images && v.images[0]) || '');
@@ -77,11 +115,20 @@ export default function EditProfileScreen() {
         });
 
         if (!result.canceled && result.assets && result.assets.length > 0) {
-            const uri = result.assets[0].uri;
-            if (isAvatar) {
-                setAvatar(uri);
-            } else {
-                setSlideshowImages(prev => [...prev, uri]);
+            try {
+                setSubmitting(true);
+                const uri = result.assets[0].uri;
+                const uploadedUrl = await uploadMedia(uri, { bucket: 'media', folder: 'venues' });
+
+                if (isAvatar) {
+                    setAvatar(uploadedUrl);
+                } else {
+                    setSlideshowImages(prev => [...prev, uploadedUrl]);
+                }
+            } catch (error: any) {
+                Alert.alert('Upload failed', error.message || 'Could not upload image.');
+            } finally {
+                setSubmitting(false);
             }
         }
     };
@@ -101,11 +148,7 @@ export default function EditProfileScreen() {
             Alert.alert('Missing venue', 'No venue profile found to update.');
             return;
         }
-
-        const [areaRaw, cityRaw] = location.split(',').map(s => s.trim());
-        const area = cityRaw ? areaRaw : '';
-        const city = cityRaw ? cityRaw : areaRaw;
-
+        setSubmitting(true);
         apiFetch(`/api/venues/${venueId}`, {
             method: 'PATCH',
             auth: true,
@@ -114,6 +157,11 @@ export default function EditProfileScreen() {
                 categories: selectedCategories,
                 area,
                 city,
+                address: formattedAddress || locationInput,
+                lat,
+                lng,
+                place_id: placeId,
+                formatted_address: formattedAddress,
                 contact_phone: contact,
                 images: slideshowImages,
                 working_hours: workingHours,
@@ -126,21 +174,75 @@ export default function EditProfileScreen() {
             })
             .catch((e: any) => {
                 Alert.alert('Error', e.message || 'Failed to update profile');
-            });
+            })
+            .finally(() => setSubmitting(false));
     };
 
-    const fetchLocationSuggestions = async (text: string) => {
-        const trimmed = text.trim();
-        if (trimmed.length < 3) {
-            setLocationSuggestions([]);
+    const fetchSuggestions = async (text: string) => {
+        setLocationInput(text);
+        if (text.trim().length < 3) {
+            setSuggestions([]);
             return;
         }
         try {
-            const res = await apiFetch(`/api/locations/suggest?q=${encodeURIComponent(trimmed)}`);
-            setLocationSuggestions(res.suggestions || []);
+            const res = await apiFetch(`/api/locations/suggest/autocomplete?q=${encodeURIComponent(text)}`);
+            setSuggestions(res.suggestions || []);
         } catch {
-            setLocationSuggestions([]);
+            setSuggestions([]);
         }
+    };
+
+    const handleSelectSuggestion = async (item: any) => {
+        try {
+            const res = await apiFetch(`/api/locations/suggest/details?place_id=${item.id}`);
+            if (res.lat && res.lng) {
+                setLat(res.lat);
+                setLng(res.lng);
+                setCity(res.city || '');
+                setArea(res.area || '');
+                setPlaceId(res.place_id);
+                setFormattedAddress(res.formatted_address);
+                setLocationInput(item.description);
+
+                const newRegion = {
+                    latitude: res.lat,
+                    longitude: res.lng,
+                    latitudeDelta: 0.005,
+                    longitudeDelta: 0.005,
+                };
+                setMapRegion(newRegion);
+                mapRef.current?.animateToRegion(newRegion, 1000);
+                setShowMap(true);
+                setSuggestions([]);
+            }
+        } catch (error) {
+            Alert.alert('Error', 'Failed to fetch location details.');
+        }
+    };
+
+    const handleGetCurrentLocation = async () => {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+            Alert.alert('Permission denied', 'Location permission is required.');
+            return;
+        }
+
+        const location = await Location.getCurrentPositionAsync({});
+        const coords = {
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude,
+        };
+
+        setLat(coords.latitude);
+        setLng(coords.longitude);
+        const newRegion = {
+            ...coords,
+            latitudeDelta: 0.005,
+            longitudeDelta: 0.005,
+        };
+        setMapRegion(newRegion);
+        mapRef.current?.animateToRegion(newRegion, 1000);
+        setShowMap(true);
     };
 
     return (
@@ -150,8 +252,10 @@ export default function EditProfileScreen() {
                     <Ionicons name="arrow-back" size={24} color="white" />
                 </TouchableOpacity>
                 <Text style={styles.headerTitle}>Edit Profile</Text>
-                <TouchableOpacity onPress={handleSave}>
-                    <Text style={styles.saveText}>Save</Text>
+                <TouchableOpacity onPress={handleSave} disabled={submitting}>
+                    <Text style={[styles.saveText, submitting && { opacity: 0.5 }]}>
+                        {submitting ? 'Saving...' : 'Save'}
+                    </Text>
                 </TouchableOpacity>
             </View>
 
@@ -220,34 +324,60 @@ export default function EditProfileScreen() {
 
                     <View style={styles.inputGroup}>
                         <Text style={styles.label}>Location</Text>
-                        <TextInput
-                            style={styles.input}
-                            value={location}
-                            onChangeText={t => {
-                                setLocation(t);
-                                fetchLocationSuggestions(t);
-                            }}
-                            placeholderTextColor="rgba(255,255,255,0.3)"
-                        />
-                        {locationSuggestions.length > 0 && (
+                        <View style={styles.searchContainer}>
+                            <TextInput
+                                style={styles.input}
+                                value={locationInput}
+                                onChangeText={fetchSuggestions}
+                                placeholder="Search venue or address..."
+                                placeholderTextColor="rgba(255,255,255,0.3)"
+                            />
+                            <TouchableOpacity
+                                style={styles.locationIcon}
+                                onPress={handleGetCurrentLocation}
+                            >
+                                <Ionicons name="locate" size={20} color={Colors.cta.primary} />
+                            </TouchableOpacity>
+                        </View>
+
+                        {suggestions.length > 0 && (
                             <View style={styles.suggestionList}>
-                                {locationSuggestions.map((s: any) => (
+                                {suggestions.map((s: any) => (
                                     <TouchableOpacity
                                         key={s.id}
                                         style={styles.suggestionItem}
-                                        onPress={() => {
-                                            setLocation(s.address || s.name);
-                                            setLocationSuggestions([]);
-                                        }}
+                                        onPress={() => handleSelectSuggestion(s)}
                                     >
                                         <Text style={styles.suggestionText}>{s.name}</Text>
-                                        {!!s.address && (
-                                            <Text style={styles.suggestionSubText} numberOfLines={1}>
-                                                {s.address}
-                                            </Text>
-                                        )}
+                                        <Text style={styles.suggestionSubText} numberOfLines={1}>
+                                            {s.address}
+                                        </Text>
                                     </TouchableOpacity>
                                 ))}
+                            </View>
+                        )}
+
+                        {showMap && (
+                            <View style={styles.mapWrapper}>
+                                <MapView
+                                    ref={mapRef}
+                                    style={styles.map}
+                                    initialRegion={mapRegion}
+                                    onRegionChangeComplete={(region) => {
+                                        if (Math.abs(region.latitude - mapRegion.latitude) > 0.0001) {
+                                            setMapRegion(region);
+                                            // Sync centered location
+                                            setLat(region.latitude);
+                                            setLng(region.longitude);
+                                        }
+                                    }}
+                                />
+                                <View style={styles.centerMarkerContainer} pointerEvents="none">
+                                    <Ionicons name="location" size={40} color={Colors.cta.primary} />
+                                </View>
+                                <View style={styles.mapOverlay}>
+                                    <Text style={styles.mapHint}>Drag pin to refine location</Text>
+                                </View>
                             </View>
                         )}
                     </View>
@@ -584,5 +714,51 @@ const styles = StyleSheet.create({
         fontSize: 18,
         fontWeight: '600',
         marginTop: 20,
+    },
+    searchContainer: {
+        position: 'relative',
+        justifyContent: 'center',
+    },
+    locationIcon: {
+        position: 'absolute',
+        right: 16,
+        padding: 4,
+    },
+    mapWrapper: {
+        height: 250,
+        borderRadius: 12,
+        overflow: 'hidden',
+        marginTop: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.1)',
+    },
+    map: {
+        width: '100%',
+        height: '100%',
+    },
+    centerMarkerContainer: {
+        position: 'absolute',
+        top: '50%',
+        left: '50%',
+        marginLeft: -20,
+        marginTop: -38, // Shift up to point at center
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 10,
+    },
+    mapOverlay: {
+        position: 'absolute',
+        bottom: 12,
+        left: 12,
+        right: 12,
+        backgroundColor: 'rgba(0,0,0,0.7)',
+        padding: 8,
+        borderRadius: 8,
+        alignItems: 'center',
+    },
+    mapHint: {
+        color: 'white',
+        fontSize: 12,
+        fontWeight: '600',
     },
 });

@@ -1,26 +1,47 @@
 
 import { ScreenWrapper } from '@/components/ScreenWrapper';
 import { Colors } from '@/constants/Colors';
+import { useUpload } from '@/contexts/UploadContext';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect, useRouter } from 'expo-router';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import React, { useEffect, useState } from 'react';
 import { Alert, Dimensions, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { SkeletonBox } from '@/components/Skeleton';
 import { apiFetch, clearAuthTokens, deletePost } from '@/lib/api';
 import { getTimeAgo } from '@/lib/time';
 
+function VideoThumbnail({ uri }: { uri: string }) {
+  const player = useVideoPlayer(uri, p => {
+    p.loop = true;
+    p.muted = true;
+    p.play();
+  });
+  return (
+    <View style={styles.postImage} pointerEvents="none">
+      <VideoView style={{ width: '100%', height: '100%' }} player={player} nativeControls={false} contentFit="cover" />
+    </View>
+  );
+}
+
 const { width } = Dimensions.get('window');
 
 export default function VenueHomeScreen() {
   const router = useRouter();
+  const { pendingPost } = useUpload();
   const [venueName, setVenueName] = useState<string>('Your venue');
   const [venueId, setVenueId] = useState<string | null>(null);
   const [recentPosts, setRecentPosts] = useState<any[]>([]);
   const [loadingPosts, setLoadingPosts] = useState(true);
   const [loadingVenue, setLoadingVenue] = useState(true);
   const [metrics, setMetrics] = useState({ likes: 0, views: 0 });
+
+  // Merge pending post with fetched posts for optimistic UI
+  const displayPosts = pendingPost ? [pendingPost, ...recentPosts] : recentPosts;
 
   useEffect(() => {
     const loadVenue = async () => {
@@ -69,6 +90,10 @@ export default function VenueHomeScreen() {
 
   const handleSignOut = async () => {
     await clearAuthTokens();
+    await AsyncStorage.removeItem('hapa_launch_preference');
+    while (router.canGoBack()) {
+      router.back();
+    }
     router.replace('/');
   };
 
@@ -101,7 +126,9 @@ export default function VenueHomeScreen() {
       <ScrollView showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <View>
-            <Text style={styles.greeting}>Good Evening,</Text>
+            <Text style={styles.greeting}>
+              {new Date().getHours() < 12 ? 'Good Morning,' : new Date().getHours() < 17 ? 'Good Afternoon,' : 'Good Evening,'}
+            </Text>
             {loadingVenue ? (
               <SkeletonBox width={180} height={20} borderRadius={10} />
             ) : (
@@ -176,21 +203,25 @@ export default function VenueHomeScreen() {
                 </View>
               ))}
             </>
-          ) : recentPosts.length === 0 ? (
+          ) : displayPosts.length === 0 ? (
             <View style={[styles.postCard, { justifyContent: 'center', alignItems: 'center' }]}>
               <Text style={{ color: 'rgba(255,255,255,0.6)', textAlign: 'center' }}>
                 You haven&apos;t posted any vibes yet.
               </Text>
             </View>
           ) : (
-            recentPosts.map(p => (
-              <View key={p.id} style={styles.postCardWrapper}>
+            displayPosts.map(p => (
+              <View key={p.id} style={[styles.postCardWrapper, p.isPending && { opacity: 0.7 }]}>
                 <TouchableOpacity
                   style={styles.postCard}
                   activeOpacity={0.9}
-                  onPress={() => router.push(`/story/${p.id}`)}
+                  onPress={() => !p.isPending && router.push(`/story/${p.id}`)}
                 >
-                  <Image source={{ uri: p.media_url }} style={styles.postImage} />
+                  {p.media_type === 'video' ? (
+                    <VideoThumbnail uri={p.media_url} />
+                  ) : (
+                    <Image source={{ uri: p.media_url }} style={styles.postImage} />
+                  )}
                   <LinearGradient
                     colors={['transparent', 'rgba(0,0,0,0.8)']}
                     style={styles.postGradient}
@@ -218,12 +249,14 @@ export default function VenueHomeScreen() {
                     </View>
                   </View>
                 </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.deleteButton}
-                  onPress={() => handleDeletePost(p.id)}
-                >
-                  <Ionicons name="trash-outline" size={16} color="white" />
-                </TouchableOpacity>
+                {!p.isPending && (
+                  <TouchableOpacity
+                    style={styles.deleteButton}
+                    onPress={() => handleDeletePost(p.id)}
+                  >
+                    <Ionicons name="trash-outline" size={16} color="white" />
+                  </TouchableOpacity>
+                )}
               </View>
             ))
           )}
@@ -325,6 +358,10 @@ const styles = StyleSheet.create({
     gap: 16,
     marginBottom: 30,
   },
+  postCardWrapper: {
+    position: 'relative',
+    marginRight: 10,
+  },
   postCard: {
     width: 140,
     height: 220,
@@ -358,6 +395,15 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0,0,0,0.8)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 2,
+  },
+  deleteButton: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    padding: 6,
+    borderRadius: 16,
+    zIndex: 10,
   },
 
   postMetricsRow: {

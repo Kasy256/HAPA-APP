@@ -5,8 +5,9 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Image, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
-import { API_BASE_URL, apiFetch, saveAuthTokens } from '@/lib/api';
-import HapaLogo from '../assets/images/hapalogo.png';
+import { apiFetch, saveAuthTokens } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
+import HapaLogo from '../assets/images/hapa.png';
 
 export default function OTPVerificationScreen() {
     const router = useRouter();
@@ -74,24 +75,26 @@ export default function OTPVerificationScreen() {
 
         try {
             setSubmitting(true);
-            const response = await fetch(`${API_BASE_URL}/api/auth/verify-otp`, {
+            const data = await apiFetch('/api/auth/verify-otp', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
                 body: JSON.stringify({
                     phone_number: phoneNumber,
                     code,
                 }),
             });
 
-            const data = await response.json();
-            if (!response.ok) {
-                throw new Error(data.error || 'Failed to verify OTP');
-            }
-
             // Store JWT tokens for authenticated calls
             await saveAuthTokens(data.access_token, data.refresh_token);
+
+            // *** CRITICAL: also update the Supabase SDK internal session ***
+            // apiFetch reads from supabase.auth.getSession(), not SecureStore.
+            // Without this, subsequent calls still use the old anonymous session.
+            if (data.access_token && data.refresh_token) {
+                await supabase.auth.setSession({
+                    access_token: data.access_token,
+                    refresh_token: data.refresh_token,
+                });
+            }
 
             // After login, check if this user already has a venue.
             // If yes -> go straight into the venue area.

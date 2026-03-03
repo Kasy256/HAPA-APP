@@ -1,17 +1,22 @@
 
 import { ScreenWrapper } from '@/components/ScreenWrapper';
 import { Colors } from '@/constants/Colors';
+import { useUpload } from '@/contexts/UploadContext';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
-import { Dimensions, FlatList, Image, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Dimensions, FlatList, Image, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+import { MediaPreview } from '@/components/MediaPreview';
 import { SkeletonBox } from '@/components/Skeleton';
-import { apiFetch } from '@/lib/api';
-import { estimateTravelTime, getUserCityAndCoords, UserLocation } from '@/lib/location';
+import { apiFetch, clearAuthTokens, getTransformedImageUrl, isVideoUrl } from '@/lib/api';
+import { estimateTravelTime, getUserCityAndCoords, UserLocation, getLocationPermission } from '@/lib/location';
+import { openDirections } from '@/lib/directions';
 import { getTimeAgo } from '@/lib/time';
 
 const { width } = Dimensions.get('window');
@@ -22,27 +27,38 @@ const TAB_ITEM_WIDTH = TAB_WIDTH / 2;
 
 export default function DiscoverScreen() {
     const router = useRouter();
+    const { pendingPost } = useUpload();
     const [activeTab, setActiveTab] = useState('home');
-    const [stories, setStories] = useState<any[]>([]);
     const [venues, setVenues] = useState<any[]>([]);
-    const [highlights, setHighlights] = useState<{ venue: any; post: any }[]>([]);
+    const [nearbyVenues, setNearbyVenues] = useState<any[]>([]);
+    const [rawPosts, setRawPosts] = useState<any[]>([]);
     const [searchResults, setSearchResults] = useState<any[]>([]);
     const [searchQuery, setSearchQuery] = useState('');
     const [locationSuggestions, setLocationSuggestions] = useState<any[]>([]);
     const [loadingFeed, setLoadingFeed] = useState(true);
+    const [loadingNearby, setLoadingNearby] = useState(false);
+    const [feedError, setFeedError] = useState<string | null>(null);
+    const [refreshing, setRefreshing] = useState(false);
     const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
     const [loadingLocation, setLoadingLocation] = useState(true);
+    const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'undetermined'>('undetermined');
     const [showSuggestions, setShowSuggestions] = useState(false);
     const translateX = useSharedValue(0);
 
-    const handleTabPress = (tab: 'home' | 'search') => {
+    const handleTabPress = useCallback((tab: 'home' | 'search') => {
         setActiveTab(tab);
         if (tab === 'home') {
             translateX.value = withSpring(0, { damping: 15, stiffness: 120 });
         } else {
             translateX.value = withSpring(TAB_ITEM_WIDTH, { damping: 15, stiffness: 120 });
         }
-    };
+    }, [translateX]);
+
+    const handleSignOut = useCallback(async () => {
+        await clearAuthTokens();
+        await AsyncStorage.removeItem('hapa_launch_preference');
+        router.replace('/');
+    }, [router]);
 
     const animatedStyle = useAnimatedStyle(() => {
         return {
@@ -50,94 +66,155 @@ export default function DiscoverScreen() {
         };
     });
 
-    useEffect(() => {
-        const loadLocationAndFeed = async () => {
-            try {
-                setLoadingLocation(true);
+    const loadFeed = useCallback(async (loc: UserLocation | null) => {
+        try {
+            setLoadingFeed(true);
+            setFeedError(null);
+            // Discover Feed (Home) uses City filtering as per requirements
+            const cityParam = loc?.city ? `?city=${encodeURIComponent(loc.city)}` : '';
+            const data = await apiFetch(`/api/discover/feed${cityParam}`);
+            setVenues(data.venues || []);
+            setRawPosts(data.posts || []);
+        } catch (e: any) {
+            setFeedError(e?.message || 'Could not load vibes. Check your connection.');
+            setVenues([]);
+            setRawPosts([]);
+        } finally {
+            setLoadingFeed(false);
+            setRefreshing(false);
+        }
+    }, []);
+
+    const loadNearby = useCallback(async (loc: UserLocation) => {
+        try {
+            setLoadingNearby(true);
+            // Search Tab "Near You" uses Coordinates
+            const params = `?lat=${encodeURIComponent(loc.latitude)}&lng=${encodeURIComponent(loc.longitude)}&radius_km=10`;
+            const data = await apiFetch(`/api/discover/feed${params}`);
+            setNearbyVenues(data.venues || []);
+        } catch (e) {
+            console.error('Near You error:', e);
+            setNearbyVenues([]);
+        } finally {
+            setLoadingNearby(false);
+        }
+    }, []);
+
+    // Memoized: stories strip — computed only when venues or rawPosts change
+    const stories = useMemo(() => {
+        const result: any[] = [];
+        // Max 5 places for stories (Top 5 Places Today)
+        const cityVenues = venues.slice(0, 15); // Take a sample to find posts
+        for (const v of cityVenues) {
+            if (result.length >= 5) break;
+
+            const venuePosts = rawPosts.filter((p: any) => p.venue_id === v.id);
+            if (venuePosts.length > 0) {
+                venuePosts.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+                result.push({
+                    id: venuePosts[0].id,
+                    venueId: v.id,
+                    name: v.name,
+                    image: v.images?.[0],
+                    active: true,
+                    lat: v.lat,
+                    lng: v.lng,
+                });
+            }
+        }
+
+        // Optimistic UI: Inject pending post to stories strip
+        if (pendingPost) {
+            // Find the venue for this post (we don't have the exact venue_id in pendingPost, but we can assume it's the current user's venue which should be one of the venues in the feed or near you)
+            // Just use a placeholder name and image for now, or find it from the list
+            result.unshift({
+                id: pendingPost.id,
+                venueId: 'me', // Assuming the pending post is for the current user's venue
+                name: 'Your venue',
+                image: pendingPost.media_type === 'image' ? pendingPost.media_url : undefined,
+                active: true,
+                isPending: true,
+                lat: userLocation?.latitude,
+                lng: userLocation?.longitude,
+            });
+        }
+
+        return result;
+    }, [venues, rawPosts, pendingPost, userLocation]);
+
+    // Memoized: hero card per venue — computed only when rawPosts or venues change
+    const highlights = useMemo(() => {
+        const latestPerVenue: Record<string, any> = {};
+        rawPosts.forEach((p: any) => {
+            const venueId = p.venue_id;
+            if (!venueId) return;
+            const existing = latestPerVenue[venueId];
+            if (!existing || new Date(p.created_at).getTime() > new Date(existing.created_at).getTime()) {
+                latestPerVenue[venueId] = p;
+            }
+        });
+        return Object.entries(latestPerVenue).reduce((acc: { venue: any; post: any }[], [venueId, post]) => {
+            const venue = venues.find((v: any) => v.id === venueId);
+            if (venue) acc.push({ venue, post });
+            return acc;
+        }, []);
+    }, [venues, rawPosts]);
+
+    const onRefresh = useCallback(() => {
+        setRefreshing(true);
+        loadFeed(userLocation);
+    }, [loadFeed, userLocation]);
+
+    const requestLocation = async () => {
+        try {
+            setLoadingLocation(true);
+            const status = await getLocationPermission();
+            setLocationPermission(status as any);
+
+            if (status === 'granted') {
                 const loc = await getUserCityAndCoords();
                 if (loc) {
                     setUserLocation(loc);
+                    await Promise.all([
+                        loadFeed(loc),
+                        loadNearby(loc)
+                    ]);
                 }
-            } catch {
-                // ignore, fall back to default city
-            } finally {
-                setLoadingLocation(false);
+            } else {
+                await loadFeed(null);
             }
+        } catch (e) {
+            console.error('Location error:', e);
+            await loadFeed(null);
+        } finally {
+            setLoadingLocation(false);
+        }
+    };
 
-            try {
-                setLoadingFeed(true);
-                const params =
-                    userLocation != null
-                        ? `?lat=${encodeURIComponent(
-                            userLocation.latitude,
-                        )}&lng=${encodeURIComponent(userLocation.longitude)}`
-                        : '';
-                const data = await apiFetch(`/api/discover/feed${params}`);
-                const vs = data.venues || [];
-                const ps = data.posts || [];
+    useEffect(() => {
+        const checkInitialPermission = async () => {
+            const status = await getLocationPermission();
+            setLocationPermission(status as any);
 
-                setVenues(vs);
-
-                // Stories strip – one bubble per venue for now (requires a post)
-                const venueStories: any[] = [];
-                vs.forEach((v: any) => {
-                    // Find latest post for this venue
-                    const venuePosts = (ps as any[]).filter(p => p.venue_id === v.id);
-                    if (venuePosts.length > 0) {
-                        // Sort by created_at desc
-                        venuePosts.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-                        const latestPost = venuePosts[0];
-                        venueStories.push({
-                            id: latestPost.id, // Link to POST ID, not Venue ID
-                            venueId: v.id,
-                            name: v.name,
-                            image: v.images?.[0],
-                            active: true,
-                            latitude: v.latitude,
-                            longitude: v.longitude,
-                        });
-                    }
-                });
-                setStories(venueStories);
-
-                // Compute hero post per venue (latest by created_at)
-                const latestPerVenue: Record<string, any> = {};
-                (ps as any[]).forEach((p) => {
-                    const venueId = p.venue_id;
-                    if (!venueId) return;
-                    const existing = latestPerVenue[venueId];
-                    if (!existing) {
-                        latestPerVenue[venueId] = p;
-                    } else {
-                        const a = new Date(p.created_at ?? 0).getTime();
-                        const b = new Date(existing.created_at ?? 0).getTime();
-                        if (a > b) {
-                            latestPerVenue[venueId] = p;
-                        }
-                    }
-                });
-
-                const heroItems: { venue: any; post: any }[] = [];
-                Object.entries(latestPerVenue).forEach(([venueId, post]) => {
-                    const venue = vs.find((v: any) => v.id === venueId);
-                    if (venue) {
-                        heroItems.push({ venue, post });
-                    }
-                });
-                setHighlights(heroItems);
-            } catch (e) {
-                // Fallback: empty feed on error for now
-                setVenues([]);
-                setStories([]);
-                setHighlights([]);
-            } finally {
-                setLoadingFeed(false);
+            if (status === 'granted') {
+                const loc = await getUserCityAndCoords();
+                if (loc) {
+                    setUserLocation(loc);
+                    await Promise.all([
+                        loadFeed(loc),
+                        loadNearby(loc)
+                    ]);
+                } else {
+                    await loadFeed(null);
+                }
+            } else {
+                await loadFeed(null);
             }
+            setLoadingLocation(false);
         };
 
-        loadLocationAndFeed();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+        checkInitialPermission();
+    }, [loadFeed]);
 
     const fetchLocationSuggestions = async (text: string) => {
         const trimmed = text.trim();
@@ -166,15 +243,19 @@ export default function DiscoverScreen() {
             return;
         }
         try {
-            const params =
-                userLocation != null
-                    ? `?q=${encodeURIComponent(text.trim())}&lat=${encodeURIComponent(
-                        userLocation.latitude,
-                    )}&lng=${encodeURIComponent(userLocation.longitude)}`
-                    : `?q=${encodeURIComponent(text.trim())}`;
-            const data = await apiFetch(`/api/discover/search${params}`);
+            const params = new URLSearchParams({
+                q: text.trim(),
+            });
+
+            if (userLocation) {
+                params.append('lat', userLocation.latitude.toString());
+                params.append('lng', userLocation.longitude.toString());
+            }
+
+            const data = await apiFetch(`/api/discover/search?${params.toString()}`);
             setSearchResults(data.venues || []);
-        } catch {
+        } catch (e) {
+            console.error('Search error:', e);
             setSearchResults([]);
         }
     };
@@ -229,7 +310,7 @@ export default function DiscoverScreen() {
                             <TouchableOpacity
                                 style={styles.iconButton}
                                 activeOpacity={0.7}
-                                onPress={() => router.replace('/')}
+                                onPress={handleSignOut}
                             >
                                 <Ionicons name="log-out-outline" size={24} color={Colors.text.primary} />
                             </TouchableOpacity>
@@ -245,8 +326,12 @@ export default function DiscoverScreen() {
                                 contentContainerStyle={{ paddingHorizontal: 20, gap: 16 }}
                                 renderItem={({ item }) => (
                                     <TouchableOpacity
-                                        style={styles.storyItem}
-                                        onPress={() => router.push({ pathname: '/story/[id]', params: { id: item.id, venueId: item.venueId } })}
+                                        style={[styles.storyItem, item.isPending && { opacity: 0.7 }]}
+                                        onPress={() => {
+                                            if (!item.isPending) {
+                                                router.push({ pathname: '/story/[id]', params: { id: item.id, venueId: item.venueId } });
+                                            }
+                                        }}
                                         activeOpacity={0.8}
                                     >
                                         <LinearGradient
@@ -254,14 +339,18 @@ export default function DiscoverScreen() {
                                             style={styles.gradientBorder}
                                         >
                                             <View style={styles.avatarInner}>
-                                                <Image source={{ uri: item.image }} style={styles.avatar} />
+                                                {item.image ? (
+                                                    <Image source={{ uri: item.image }} style={styles.avatar} />
+                                                ) : (
+                                                    <View style={styles.avatar} />
+                                                )}
                                             </View>
                                         </LinearGradient>
                                         <Text style={styles.storyName} numberOfLines={1}>{item.name}</Text>
                                         <Text style={styles.distanceText}>
-                                            {userLocation && item.latitude && item.longitude
-                                                ? estimateTravelTime(userLocation.latitude, userLocation.longitude, item.latitude, item.longitude)
-                                                : ''}
+                                            {userLocation && item.lat && item.lng
+                                                ? estimateTravelTime(userLocation.latitude, userLocation.longitude, item.lat, item.lng)
+                                                : item.isPending ? 'Sending...' : ''}
                                         </Text>
                                     </TouchableOpacity>
                                 )}
@@ -274,6 +363,14 @@ export default function DiscoverScreen() {
                         style={styles.scrollContainer}
                         contentContainerStyle={styles.contentContainer}
                         showsVerticalScrollIndicator={false}
+                        refreshControl={
+                            <RefreshControl
+                                refreshing={refreshing}
+                                onRefresh={onRefresh}
+                                tintColor={Colors.cta.primary}
+                                colors={[Colors.cta.primary]}
+                            />
+                        }
                     >
                         {/* Feed Section Title */}
                         <View style={styles.sectionHeader}>
@@ -282,7 +379,7 @@ export default function DiscoverScreen() {
 
                         {/* Vertical Feed */}
                         <View style={styles.feedContainer}>
-                            {highlights.length === 0 ? (
+                            {loadingFeed && highlights.length === 0 ? (
                                 <>
                                     {[1, 2, 3].map((i) => (
                                         <View key={i} style={styles.venueCard}>
@@ -290,6 +387,30 @@ export default function DiscoverScreen() {
                                         </View>
                                     ))}
                                 </>
+                            ) : feedError ? (
+                                <View style={{ padding: 40, alignItems: 'center' }}>
+                                    <Ionicons name="cloud-offline-outline" size={48} color="rgba(255,255,255,0.4)" />
+                                    <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 16, marginTop: 16, textAlign: 'center' }}>
+                                        {feedError}
+                                    </Text>
+                                    <TouchableOpacity
+                                        style={{ marginTop: 20, backgroundColor: Colors.cta.primary, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 }}
+                                        onPress={() => loadFeed(userLocation)}
+                                    >
+                                        <Text style={{ color: 'white', fontWeight: '700', fontSize: 14 }}>Try Again</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            ) : highlights.length === 0 ? (
+                                <View style={{ padding: 40, alignItems: 'center' }}>
+                                    <Ionicons name="sparkles-outline" size={48} color="rgba(255,255,255,0.4)" />
+                                    <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 18, fontWeight: '700', marginTop: 16 }}>
+                                        No Vibes Yet
+                                    </Text>
+                                    <Text style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14, marginTop: 8, textAlign: 'center' }}>
+                                        Venues near you haven't posted today.
+                                        Pull down to refresh.
+                                    </Text>
+                                </View>
                             ) : (
                                 highlights.map(({ venue, post }) => (
                                     <TouchableOpacity
@@ -298,7 +419,7 @@ export default function DiscoverScreen() {
                                         activeOpacity={0.95}
                                         onPress={() => router.push(`/venue/${venue.id}`)}
                                     >
-                                        <Image source={{ uri: post.media_url }} style={styles.cardImage} resizeMode="cover" />
+                                        <MediaPreview uri={isVideoUrl(post.media_url) ? post.media_url : getTransformedImageUrl(post.media_url, 800)} style={styles.cardImage} />
 
                                         {/* Card Overlay Content */}
                                         <LinearGradient
@@ -320,6 +441,19 @@ export default function DiscoverScreen() {
                                                 <Ionicons name="flash" size={12} color="#FFD700" style={{ marginRight: 4 }} />
                                                 <Text style={styles.eventName}>{venue.type}</Text>
                                             </View>
+
+                                            {(venue.lat && venue.lng) && (
+                                                <TouchableOpacity
+                                                    style={styles.directionsButton}
+                                                    onPress={(e) => {
+                                                        e.stopPropagation();
+                                                        openDirections(venue.lat, venue.lng, venue.name);
+                                                    }}
+                                                >
+                                                    <Ionicons name="navigate" size={16} color="white" />
+                                                    <Text style={styles.directionsButtonText}>GET DIRECTIONS</Text>
+                                                </TouchableOpacity>
+                                            )}
                                         </View>
                                     </TouchableOpacity>
                                 ))
@@ -389,14 +523,27 @@ export default function DiscoverScreen() {
                         </Text>
 
                         <View style={styles.feedContainer}>
-                            {searchQuery.length > 0 && searchResults.length === 0 ? (
+                            {locationPermission !== 'granted' && searchQuery.length === 0 ? (
+                                <View style={styles.permissionContainer}>
+                                    <View style={styles.permissionCircle}>
+                                        <Ionicons name="location" size={32} color={Colors.cta.primary} />
+                                    </View>
+                                    <Text style={styles.permissionTitle}>Enable Location</Text>
+                                    <Text style={styles.permissionText}>
+                                        Allow location access to find the hottest vibes and venues near you right now.
+                                    </Text>
+                                    <TouchableOpacity style={styles.permissionButton} onPress={requestLocation}>
+                                        <Text style={styles.permissionButtonText}>USE CURRENT LOCATION</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            ) : searchQuery.length > 0 && searchResults.length === 0 ? (
                                 <View style={{ padding: 20, alignItems: 'center' }}>
                                     <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 16 }}>
                                         No venues found for "{searchQuery}"
                                     </Text>
                                 </View>
                             ) : (
-                                (searchQuery.length > 0 ? searchResults : venues).map((venue) => (
+                                (searchQuery.length > 0 ? searchResults : nearbyVenues).map((venue) => (
                                     <TouchableOpacity
                                         key={venue.id}
                                         style={styles.searchCard}
@@ -405,20 +552,38 @@ export default function DiscoverScreen() {
                                     >
                                         {/* Top Image Section */}
                                         <View style={styles.searchCardImageWrapper}>
-                                            <Image source={{ uri: venue.images?.[0] }} style={styles.searchCardImage} resizeMode="cover" />
+                                            <Image source={{ uri: getTransformedImageUrl(venue.images?.[0], 400) }} style={styles.searchCardImage} resizeMode="cover" />
                                             <View style={styles.searchCardLogoContainer}>
-                                                <Image source={{ uri: venue.images?.[0] }} style={styles.searchCardLogo} />
+                                                <Image source={{ uri: getTransformedImageUrl(venue.images?.[0], 80, 90, 'contain') }} style={styles.searchCardLogo} />
                                             </View>
                                         </View>
 
                                         {/* Bottom Info Section */}
                                         <View style={styles.searchCardInfo}>
                                             <View style={styles.cardRow}>
-                                                <Text style={styles.searchCardName}>{venue.name}</Text>
-                                                <Text style={styles.searchCardTime}>Now</Text>
+                                                <Text style={styles.searchCardName} numberOfLines={1}>{venue.name}</Text>
+                                                {userLocation && venue.lat && venue.lng && (
+                                                    <Text style={styles.searchCardDistance}>
+                                                        {estimateTravelTime(userLocation.latitude, userLocation.longitude, venue.lat, venue.lng)}
+                                                    </Text>
+                                                )}
                                             </View>
-                                            <Text style={styles.searchCardArea}>{venue.area}</Text>
-                                            <Text style={styles.searchCardEvent}>{venue.type}</Text>
+                                            <Text style={styles.searchCardTagline} numberOfLines={1}>
+                                                {venue.categories?.length > 0 ? venue.categories.join(' • ') : venue.type}
+                                            </Text>
+
+                                            {(venue.lat && venue.lng) && (
+                                                <TouchableOpacity
+                                                    style={styles.searchDirectionsButton}
+                                                    onPress={(e) => {
+                                                        e.stopPropagation();
+                                                        openDirections(venue.lat, venue.lng, venue.name);
+                                                    }}
+                                                >
+                                                    <Ionicons name="navigate" size={14} color="white" />
+                                                    <Text style={styles.searchDirectionsText}>DIRECTIONS</Text>
+                                                </TouchableOpacity>
+                                            )}
                                         </View>
                                     </TouchableOpacity>
                                 ))
@@ -664,6 +829,23 @@ const styles = StyleSheet.create({
         fontSize: 14,
         fontWeight: '600',
     },
+    directionsButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: Colors.cta.primary,
+        alignSelf: 'flex-start',
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 8,
+        marginTop: 12,
+        gap: 6,
+    },
+    directionsButtonText: {
+        color: 'white',
+        fontSize: 12,
+        fontWeight: '800',
+        letterSpacing: 0.5,
+    },
     bottomBarWrapper: {
         position: 'absolute',
         bottom: 40,
@@ -799,23 +981,82 @@ const styles = StyleSheet.create({
     searchCardInfo: {
         padding: 16,
     },
+    searchDirectionsButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(255,255,255,0.1)',
+        alignSelf: 'flex-end',
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 6,
+        marginTop: -20, // Pull it up to align with text
+        gap: 4,
+    },
+    searchDirectionsText: {
+        color: 'white',
+        fontSize: 10,
+        fontWeight: '700',
+    },
     searchCardName: {
         fontSize: 18,
         fontWeight: 'bold',
         color: 'white',
+        flex: 1,
+        marginRight: 8,
     },
-    searchCardTime: {
-        fontSize: 12,
-        color: 'rgba(255,255,255,0.6)',
+    searchCardDistance: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: Colors.cta.primary,
     },
-    searchCardArea: {
+    searchCardTagline: {
         color: 'rgba(255,255,255,0.6)',
         fontSize: 13,
-        marginTop: 2,
+        marginTop: 4,
     },
-    searchCardEvent: {
+    // Permission Styles
+    permissionContainer: {
+        alignItems: 'center',
+        padding: 32,
+        backgroundColor: 'rgba(255,255,255,0.03)',
+        borderRadius: 24,
+        marginHorizontal: 16,
+        marginTop: 20,
+    },
+    permissionCircle: {
+        width: 80,
+        height: 80,
+        borderRadius: 40,
+        backgroundColor: 'rgba(255,0,149,0.1)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 20,
+    },
+    permissionTitle: {
         color: 'white',
-        fontWeight: '600',
-        marginTop: 8,
+        fontSize: 22,
+        fontWeight: 'bold',
+        marginBottom: 12,
+    },
+    permissionText: {
+        color: 'rgba(255,255,255,0.6)',
+        fontSize: 15,
+        textAlign: 'center',
+        lineHeight: 22,
+        marginBottom: 24,
+    },
+    permissionButton: {
+        backgroundColor: Colors.cta.primary,
+        paddingHorizontal: 24,
+        paddingVertical: 14,
+        borderRadius: 12,
+        width: '100%',
+        alignItems: 'center',
+    },
+    permissionButtonText: {
+        color: 'white',
+        fontSize: 14,
+        fontWeight: 'bold',
+        letterSpacing: 1,
     },
 });

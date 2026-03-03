@@ -26,7 +26,15 @@ export default {
                 backgroundColor: '#FFFFFF'
             },
             edgeToEdgeEnabled: true,
-            predictiveBackGestureEnabled: false
+            predictiveBackGestureEnabled: false,
+            permissions: [
+                'ACCESS_FINE_LOCATION',
+                'ACCESS_COARSE_LOCATION',
+                'CAMERA',
+                'RECORD_AUDIO',
+                'READ_EXTERNAL_STORAGE',
+                'WRITE_EXTERNAL_STORAGE',
+            ],
         },
         web: {
             bundler: 'metro',
@@ -38,7 +46,28 @@ export default {
             '@react-native-community/datetimepicker',
             'expo-font',
             'expo-secure-store',
-            'expo-video'
+            'expo-video',
+            [
+                'expo-location',
+                {
+                    locationAlwaysAndWhenInUsePermission: 'HAPA needs your location to show venues and vibes near you.',
+                    locationAlwaysPermission: 'HAPA needs your location to show venues and vibes near you.',
+                    locationWhenInUsePermission: 'HAPA needs your location to show venues and vibes near you.',
+                },
+            ],
+            [
+                'expo-camera',
+                {
+                    cameraPermission: 'Allow HAPA to use your camera to capture vibes.',
+                    microphonePermission: 'Allow HAPA to use your microphone to record sound for vibes.',
+                },
+            ],
+            [
+                'expo-image-picker',
+                {
+                    photosPermission: 'Allow HAPA to access your photos to share vibes from your gallery.',
+                },
+            ],
         ],
         experiments: {
             typedRoutes: true

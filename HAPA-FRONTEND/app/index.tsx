@@ -6,7 +6,7 @@ import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-import { getAccessToken } from '@/lib/api';
+import { isVenueOwner } from '@/lib/api';
 import HapaLogo from '../assets/images/hapa.png';
 
 const LAUNCH_PREF_KEY = 'hapa_launch_preference'; // 'discover' | 'promote'
@@ -26,9 +26,9 @@ export default function StartScreen() {
                     return;
                 }
                 if (pref === 'promote') {
-                    // Check if already logged in — skip login if so
-                    const token = await getAccessToken();
-                    if (token) {
+                    // Only skip login screen if user is a real venue owner (not anonymous)
+                    const ownerLoggedIn = await isVenueOwner();
+                    if (ownerLoggedIn) {
                         router.replace('/(venue)');
                     } else {
                         router.replace('/venue-login');
@@ -54,9 +54,9 @@ export default function StartScreen() {
         if (dontShowAgain) {
             await AsyncStorage.setItem(LAUNCH_PREF_KEY, 'promote');
         }
-        // Check if already logged in
-        const token = await getAccessToken();
-        if (token) {
+        // Only skip the login screen if the user is a real authenticated venue owner
+        const ownerLoggedIn = await isVenueOwner();
+        if (ownerLoggedIn) {
             router.push('/(venue)');
         } else {
             router.push('/venue-login');

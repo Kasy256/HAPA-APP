@@ -5,7 +5,7 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Image, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
-import { apiFetch, saveAuthTokens } from '@/lib/api';
+import { apiFetch, saveAuthTokens, setVenueOwner } from '@/lib/api';
 import { supabase } from '@/lib/supabaseClient';
 import HapaLogo from '../assets/images/hapa.png';
 
@@ -85,6 +85,8 @@ export default function OTPVerificationScreen() {
 
             // Store JWT tokens for authenticated calls
             await saveAuthTokens(data.access_token, data.refresh_token);
+            // Mark this user as an authenticated venue owner (distinct from anonymous)
+            await setVenueOwner(true);
 
             // *** CRITICAL: also update the Supabase SDK internal session ***
             // apiFetch reads from supabase.auth.getSession(), not SecureStore.

@@ -4,6 +4,8 @@ import { supabase } from './supabaseClient';
 
 const ACCESS_TOKEN_KEY = 'hapa_access_token';
 const REFRESH_TOKEN_KEY = 'hapa_refresh_token';
+/** Separate flag — only set after a real OTP login. Anonymous sessions do NOT set this. */
+const VENUE_OWNER_KEY = 'hapa_is_venue_owner';
 
 export async function saveAuthTokens(accessToken: string, refreshToken: string) {
   _cachedToken = accessToken;
@@ -22,6 +24,22 @@ export async function clearAuthTokens() {
   _cachedToken = null;
   await SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY);
   await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY);
+  await SecureStore.deleteItemAsync(VENUE_OWNER_KEY);
+}
+
+/** Mark the current user as an authenticated venue owner (set after OTP success). */
+export async function setVenueOwner(value: boolean) {
+  if (value) {
+    await SecureStore.setItemAsync(VENUE_OWNER_KEY, '1');
+  } else {
+    await SecureStore.deleteItemAsync(VENUE_OWNER_KEY);
+  }
+}
+
+/** Returns true only if the user has completed OTP login (not just anonymous). */
+export async function isVenueOwner(): Promise<boolean> {
+  const val = await SecureStore.getItemAsync(VENUE_OWNER_KEY);
+  return val === '1';
 }
 
 const SUPABASE_URL = Constants.expoConfig?.extra?.EXPO_SUPABASE_URL as string;

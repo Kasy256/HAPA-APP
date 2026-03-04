@@ -7,8 +7,9 @@ import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Dimensions, FlatList, Image, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, Dimensions, FlatList, Image, Linking, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import * as Location from 'expo-location';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -168,7 +169,7 @@ export default function DiscoverScreen() {
     const requestLocation = async () => {
         try {
             setLoadingLocation(true);
-            const status = await getLocationPermission();
+            const { status, canAskAgain } = await Location.requestForegroundPermissionsAsync();
             setLocationPermission(status as any);
 
             if (status === 'granted') {
@@ -180,8 +181,15 @@ export default function DiscoverScreen() {
                         loadNearby(loc)
                     ]);
                 }
-            } else {
-                await loadFeed(null);
+            } else if (!canAskAgain) {
+                Alert.alert(
+                    'Location Permission Required',
+                    'HAPA needs location access to find vibes near you. Please enable it in your device settings.',
+                    [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Open Settings', onPress: () => Linking.openSettings() }
+                    ]
+                );
             }
         } catch (e) {
             console.error('Location error:', e);
@@ -193,7 +201,7 @@ export default function DiscoverScreen() {
 
     useEffect(() => {
         const checkInitialPermission = async () => {
-            const status = await getLocationPermission();
+            const { status } = await Location.getForegroundPermissionsAsync();
             setLocationPermission(status as any);
 
             if (status === 'granted') {
@@ -207,10 +215,11 @@ export default function DiscoverScreen() {
                 } else {
                     await loadFeed(null);
                 }
+                setLoadingLocation(false);
             } else {
-                await loadFeed(null);
+                // If not granted, we show the gate, so we still set loading to false to show the UI
+                setLoadingLocation(false);
             }
-            setLoadingLocation(false);
         };
 
         checkInitialPermission();
@@ -283,6 +292,53 @@ export default function DiscoverScreen() {
     };
 
 
+
+    if (loadingLocation) {
+        return (
+            <ScreenWrapper>
+                <View style={[styles.scrollContainer, { justifyContent: 'center', alignItems: 'center' }]}>
+                    <SkeletonBox width={100} height={100} borderRadius={50} />
+                    <View style={{ marginTop: 24 }}>
+                        <SkeletonBox width={200} height={32} borderRadius={16} />
+                    </View>
+                </View>
+            </ScreenWrapper>
+        );
+    }
+
+    if (locationPermission !== 'granted') {
+        return (
+            <ScreenWrapper>
+                <View style={styles.gateOverlay}>
+                    <View style={styles.gateContent}>
+                        <View style={styles.permissionCircle}>
+                            <Ionicons name="location" size={48} color={Colors.cta.primary} />
+                        </View>
+                        <Text style={styles.permissionTitle}>Enable Location Access</Text>
+                        <Text style={styles.permissionText}>
+                            Allow HAPA to use your location to find the hottest vibes and venues near you right now.
+                            This helps us show you places you can actually reach in your city.
+                        </Text>
+
+                        <TouchableOpacity
+                            style={styles.permissionButton}
+                            onPress={requestLocation}
+                            activeOpacity={0.8}
+                        >
+                            <Text style={styles.permissionButtonText}>ALLOW LOCATION ACCESS</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={styles.gateSignOutButton}
+                            onPress={handleSignOut}
+                        >
+                            <Text style={styles.gateSignOutText}>Sign Out</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </ScreenWrapper>
+        );
+    }
 
     return (
         <ScreenWrapper>
@@ -528,12 +584,12 @@ export default function DiscoverScreen() {
                                     <View style={styles.permissionCircle}>
                                         <Ionicons name="location" size={32} color={Colors.cta.primary} />
                                     </View>
-                                    <Text style={styles.permissionTitle}>Enable Location</Text>
+                                    <Text style={styles.permissionTitle}>Location Access Required</Text>
                                     <Text style={styles.permissionText}>
-                                        Allow location access to find the hottest vibes and venues near you right now.
+                                        Something went wrong. Please ensure location is enabled to use search.
                                     </Text>
                                     <TouchableOpacity style={styles.permissionButton} onPress={requestLocation}>
-                                        <Text style={styles.permissionButtonText}>USE CURRENT LOCATION</Text>
+                                        <Text style={styles.permissionButtonText}>RETRY LOCATION</Text>
                                     </TouchableOpacity>
                                 </View>
                             ) : searchQuery.length > 0 && searchResults.length === 0 ? (
@@ -798,11 +854,78 @@ const styles = StyleSheet.create({
     },
     venueName: {
         color: Colors.text.primary,
-        fontSize: 20,
-        fontWeight: 'bold',
+        fontSize: 22,
+        fontWeight: '700',
         textShadowColor: 'rgba(0,0,0,0.5)',
         textShadowOffset: { width: 0, height: 2 },
         textShadowRadius: 4,
+    },
+    gateOverlay: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingHorizontal: 40,
+        backgroundColor: '#141414',
+    },
+    gateContent: {
+        alignItems: 'center',
+        width: '100%',
+    },
+    permissionCircle: {
+        width: 100,
+        height: 100,
+        borderRadius: 50,
+        backgroundColor: 'rgba(255, 215, 0, 0.1)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 32,
+    },
+    permissionTitle: {
+        fontSize: 24,
+        fontWeight: '800',
+        color: 'white',
+        textAlign: 'center',
+        marginBottom: 16,
+    },
+    permissionText: {
+        fontSize: 16,
+        color: 'rgba(255,255,255,0.6)',
+        textAlign: 'center',
+        lineHeight: 24,
+        marginBottom: 40,
+    },
+    permissionButton: {
+        backgroundColor: Colors.cta.primary,
+        paddingVertical: 18,
+        paddingHorizontal: 32,
+        borderRadius: 16,
+        width: '100%',
+        alignItems: 'center',
+        shadowColor: Colors.cta.primary,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 5,
+    },
+    permissionButtonText: {
+        color: 'white',
+        fontWeight: 'bold',
+        fontSize: 16,
+        letterSpacing: 0.5,
+    },
+    gateSignOutButton: {
+        marginTop: 32,
+        padding: 12,
+    },
+    gateSignOutText: {
+        color: 'rgba(255,255,255,0.4)',
+        fontSize: 15,
+        fontWeight: '600',
+    },
+    permissionContainer: {
+        padding: 40,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     timeBadge: {
         backgroundColor: 'rgba(255,255,255,0.2)',
@@ -1013,50 +1136,5 @@ const styles = StyleSheet.create({
         color: 'rgba(255,255,255,0.6)',
         fontSize: 13,
         marginTop: 4,
-    },
-    // Permission Styles
-    permissionContainer: {
-        alignItems: 'center',
-        padding: 32,
-        backgroundColor: 'rgba(255,255,255,0.03)',
-        borderRadius: 24,
-        marginHorizontal: 16,
-        marginTop: 20,
-    },
-    permissionCircle: {
-        width: 80,
-        height: 80,
-        borderRadius: 40,
-        backgroundColor: 'rgba(255,0,149,0.1)',
-        justifyContent: 'center',
-        alignItems: 'center',
-        marginBottom: 20,
-    },
-    permissionTitle: {
-        color: 'white',
-        fontSize: 22,
-        fontWeight: 'bold',
-        marginBottom: 12,
-    },
-    permissionText: {
-        color: 'rgba(255,255,255,0.6)',
-        fontSize: 15,
-        textAlign: 'center',
-        lineHeight: 22,
-        marginBottom: 24,
-    },
-    permissionButton: {
-        backgroundColor: Colors.cta.primary,
-        paddingHorizontal: 24,
-        paddingVertical: 14,
-        borderRadius: 12,
-        width: '100%',
-        alignItems: 'center',
-    },
-    permissionButtonText: {
-        color: 'white',
-        fontSize: 14,
-        fontWeight: 'bold',
-        letterSpacing: 1,
     },
 });

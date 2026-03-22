@@ -127,6 +127,13 @@ export default function VenueLayout() {
           href: null,
         }}
       />
+      <Tabs.Screen
+        name="subscription"
+        options={{
+          tabBarStyle: { display: 'none' },
+          href: null,
+        }}
+      />
     </Tabs>
   );
 }

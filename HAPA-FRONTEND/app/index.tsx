@@ -7,6 +7,7 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { isVenueOwner } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
 import HapaLogo from '../assets/images/hapa.png';
 
 const LAUNCH_PREF_KEY = 'hapa_launch_preference'; // 'discover' | 'promote'
@@ -27,13 +28,15 @@ export default function StartScreen() {
                 }
                 if (pref === 'promote') {
                     // Only skip login screen if user is a real venue owner (not anonymous)
-                    const ownerLoggedIn = await isVenueOwner();
+                    const { data: { session } } = await supabase.auth.getSession();
+                    const ownerLoggedIn = (await isVenueOwner()) && !!session;
+
                     if (ownerLoggedIn) {
                         router.replace('/(venue)');
-                    } else {
-                        router.replace('/venue-login');
+                        return;
                     }
-                    return;
+                    // ✅ Not logged in — fall through and show StartScreen
+                    // Do NOT redirect to venue-login here
                 }
             } catch (e) {
                 console.warn('[StartScreen] Error reading preference:', e);

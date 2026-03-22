@@ -2,6 +2,7 @@
 import { ScreenWrapper } from '@/components/ScreenWrapper';
 import { Colors } from '@/constants/Colors';
 import { useUpload } from '@/contexts/UploadContext';
+import { useSubscription, getTierLabel, getTierColor } from '@/hooks/useSubscription';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -14,6 +15,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SkeletonBox } from '@/components/Skeleton';
 import { apiFetch, clearAuthTokens, deletePost } from '@/lib/api';
 import { getTimeAgo } from '@/lib/time';
+import { supabase } from '@/lib/supabaseClient';
 
 function VideoThumbnail({ uri }: { uri: string }) {
   const player = useVideoPlayer(uri, p => {
@@ -33,6 +35,7 @@ const { width } = Dimensions.get('window');
 export default function VenueHomeScreen() {
   const router = useRouter();
   const { pendingPost } = useUpload();
+  const subscription = useSubscription();
   const [venueName, setVenueName] = useState<string>('Your venue');
   const [venueId, setVenueId] = useState<string | null>(null);
   const [recentPosts, setRecentPosts] = useState<any[]>([]);
@@ -89,12 +92,61 @@ export default function VenueHomeScreen() {
   );
 
   const handleSignOut = async () => {
-    await clearAuthTokens();
-    await AsyncStorage.removeItem('hapa_launch_preference');
-    while (router.canGoBack()) {
-      router.back();
+    try {
+      console.log('[Logout] Initiating full sign out from dashboard...');
+
+      // 1. Clear Supabase session
+      const { error: signOutError } = await supabase.auth.signOut();
+      if (signOutError) console.warn('[Logout] Supabase signOut warning:', signOutError.message);
+
+      // 2. Clear custom auth tokens
+      await clearAuthTokens();
+
+      // 3. Remove launch preference — must complete before navigation
+      await AsyncStorage.removeItem('hapa_launch_preference');
+
+      // 4. Small flush to ensure AsyncStorage commit
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      console.log('[Logout] Cleared. Navigating to start...');
+      router.replace('/');
+    } catch (err) {
+      console.error('[Logout] Critical failure:', err);
+      await AsyncStorage.removeItem('hapa_launch_preference').catch(() => {});
+      router.replace('/');
     }
-    router.replace('/');
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      "Delete Account",
+      "Are you absolutely sure you want to delete your account? This action is permanent and will delete all your venues, vibes, and subscription data. This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete Forever",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              Alert.alert("Deleting...", "Please wait while we delete your account.");
+
+              await apiFetch('/api/auth/delete-account', { method: 'DELETE', auth: true });
+
+              // Clear everything before navigating
+              await supabase.auth.signOut();
+              await clearAuthTokens();
+              await AsyncStorage.removeItem('hapa_launch_preference');
+              await new Promise(resolve => setTimeout(resolve, 50));
+
+              router.replace('/');
+
+            } catch (error: any) {
+              Alert.alert("Error", error.message || "Failed to delete account. Please contact support.");
+            }
+          }
+        }
+      ]
+    );
   };
 
   const handleDeletePost = (postId: string) => {
@@ -135,14 +187,59 @@ export default function VenueHomeScreen() {
               <Text style={styles.venueName}>{venueName}</Text>
             )}
           </View>
-          <TouchableOpacity
-            style={styles.iconButton}
-            activeOpacity={0.7}
-            onPress={handleSignOut}
-          >
-            <Ionicons name="log-out-outline" size={24} color={Colors.text.primary} />
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', gap: 12 }}>
+            <TouchableOpacity
+              style={styles.iconButton}
+              activeOpacity={0.7}
+              onPress={handleSignOut}
+            >
+              <Ionicons name="log-out-outline" size={24} color={Colors.text.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.iconButton, { backgroundColor: 'rgba(255,59,48,0.1)' }]}
+              activeOpacity={0.7}
+              onPress={handleDeleteAccount}
+            >
+              <Ionicons name="trash-outline" size={24} color="#FF3B30" />
+            </TouchableOpacity>
+          </View>
         </View>
+
+        {/* Subscription status banner — free tier upgrade prompt */}
+        {!subscription.loading && subscription.tier === 'free' && (
+          <TouchableOpacity
+            style={styles.upgradeBanner}
+            onPress={() => router.push('/(venue)/subscription' as any)}
+            activeOpacity={0.8}
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={styles.upgradeBannerTitle}>
+                Free plan — {subscription.postsToday}/3 posts today
+              </Text>
+              <Text style={styles.upgradeBannerSub}>
+                Upgrade to Pro for unlimited posts + top 5 placement
+              </Text>
+            </View>
+            <Text style={styles.upgradeBannerCta}>Upgrade →</Text>
+          </TouchableOpacity>
+        )}
+
+        {/* Pro / Elite status badge */}
+        {!subscription.loading && subscription.tier !== 'free' && (
+          <View style={styles.tierBadgeRow}>
+            <View style={[styles.tierBadge, { backgroundColor: `${getTierColor(subscription.tier)}22` }]}>
+              <Text style={[styles.tierBadgeText, { color: getTierColor(subscription.tier) }]}>
+                {getTierLabel(subscription.tier).toUpperCase()}
+              </Text>
+            </View>
+            <Text style={styles.tierBadgeSub}>
+              Unlimited posts · Renews{' '}
+              {subscription.currentPeriodEnd
+                ? new Date(subscription.currentPeriodEnd).toLocaleDateString()
+                : '—'}
+            </Text>
+          </View>
+        )}
 
         {/* Quick Stats */}
         <View style={styles.statsContainer}>
@@ -250,12 +347,20 @@ export default function VenueHomeScreen() {
                   </View>
                 </TouchableOpacity>
                 {!p.isPending && (
-                  <TouchableOpacity
-                    style={styles.deleteButton}
-                    onPress={() => handleDeletePost(p.id)}
-                  >
-                    <Ionicons name="trash-outline" size={16} color="white" />
-                  </TouchableOpacity>
+                  <View style={styles.postActions}>
+                    <TouchableOpacity
+                      style={styles.boostButton}
+                      onPress={() => router.push(`/(venue)/subscription?tab=boost&post_id=${p.id}` as any)}
+                    >
+                      <Text style={styles.boostButtonText}>BOOST</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.deleteButton}
+                      onPress={() => handleDeletePost(p.id)}
+                    >
+                      <Ionicons name="trash-outline" size={16} color="white" />
+                    </TouchableOpacity>
+                  </View>
                 )}
               </View>
             ))
@@ -396,14 +501,77 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 2,
   },
-  deleteButton: {
+  upgradeBanner: {
+    backgroundColor: 'rgba(189,49,21,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(189,49,21,0.3)',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  upgradeBannerTitle: {
+    color: 'white',
+    fontWeight: '700',
+    fontSize: 14,
+    marginBottom: 3,
+  },
+  upgradeBannerSub: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 12,
+  },
+  upgradeBannerCta: {
+    color: '#BD3115',
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  tierBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  tierBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 20,
+  },
+  tierBadgeText: {
+    fontWeight: '800',
+    fontSize: 12,
+    letterSpacing: 0.5,
+  },
+  tierBadgeSub: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.35)',
+  },
+  postActions: {
     position: 'absolute',
     top: 8,
     right: 8,
+    gap: 6,
+    zIndex: 10,
+  },
+  boostButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(189,49,21,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  boostButtonText: {
+    color: '#BD3115',
+    fontWeight: '700',
+    fontSize: 10,
+    letterSpacing: 0.5,
+  },
+  deleteButton: {
     backgroundColor: 'rgba(0,0,0,0.6)',
     padding: 6,
     borderRadius: 16,
-    zIndex: 10,
   },
 
   postMetricsRow: {

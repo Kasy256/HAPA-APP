@@ -487,7 +487,19 @@ export default function DiscoverScreen() {
 
                                         <View style={styles.cardContent}>
                                             <View style={styles.cardRow}>
-                                                <Text style={styles.venueName}>{venue.name}</Text>
+                                                <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                                    <Text style={styles.venueName}>{venue.name}</Text>
+                                                    {venue.is_boosted && (
+                                                        <View style={styles.boostBadge}>
+                                                            <Text style={styles.boostText}>🔥 Boosted</Text>
+                                                        </View>
+                                                    )}
+                                                    {venue.tier && venue.tier !== 'free' && (
+                                                        <View style={[styles.tierBadge, { backgroundColor: venue.tier === 'elite' ? '#FFD700' : '#BD3115' }]}>
+                                                            <Text style={styles.tierText}>{venue.tier === 'elite' ? 'Elite' : 'Pro'}</Text>
+                                                        </View>
+                                                    )}
+                                                </View>
                                                 <View style={styles.timeBadge}>
                                                     <Text style={styles.timeAgo}>{getTimeAgo(post.created_at)}</Text>
                                                 </View>
@@ -1104,6 +1116,12 @@ const styles = StyleSheet.create({
     searchCardInfo: {
         padding: 16,
     },
+    searchDirectionsText: {
+        color: 'white',
+        fontSize: 10,
+        fontWeight: '700',
+        marginLeft: 4,
+    },
     searchDirectionsButton: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -1115,10 +1133,30 @@ const styles = StyleSheet.create({
         marginTop: -20, // Pull it up to align with text
         gap: 4,
     },
-    searchDirectionsText: {
+    boostBadge: {
+        backgroundColor: '#FF4FA3',
+        paddingHorizontal: 8,
+        paddingVertical: 2,
+        borderRadius: 10,
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    boostText: {
+        color: 'white',
+        fontSize: 10,
+        fontWeight: '800',
+        textTransform: 'uppercase',
+    },
+    tierBadge: {
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 4,
+    },
+    tierText: {
         color: 'white',
         fontSize: 10,
         fontWeight: '700',
+        textTransform: 'uppercase',
     },
     searchCardName: {
         fontSize: 18,

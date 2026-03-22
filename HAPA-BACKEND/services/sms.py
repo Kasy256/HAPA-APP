@@ -2,7 +2,7 @@ import logging
 import os
 import random
 
-from twilio.rest import Client
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -22,31 +22,41 @@ def _send_otp_via_log(phone_number: str, code: str) -> None:
     print(f"[DEV OTP] {code} -> {phone_number}")
 
 
-def _send_otp_via_twilio(phone_number: str, code: str) -> None:
-    """Send OTP using Twilio SMS provider."""
-    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
-    from_number = os.getenv("TWILIO_FROM_NUMBER")
+def _send_otp_via_africastalking(phone_number: str, code: str) -> None:
+    """Send OTP using Africa's Talking SMS provider."""
+    username = os.getenv("AFRICASTALKING_USERNAME")
+    api_key = os.getenv("AFRICASTALKING_API_KEY")
 
-    if not account_sid or not auth_token or not from_number:
+    if not username or not api_key:
         logger.error(
-            "Twilio configuration missing. Ensure TWILIO_ACCOUNT_SID, "
-            "TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER are set."
+            "Africa's Talking configuration missing. Ensure AFRICASTALKING_USERNAME and "
+            "AFRICASTALKING_API_KEY are set."
         )
         _send_otp_via_log(phone_number, code)
         return
 
     try:
-        client = Client(account_sid, auth_token)
-        message_body = f"Your HAPA verification code is {code}"
-        client.messages.create(
-            body=message_body,
-            from_=from_number,
-            to=phone_number,
-        )
-        logger.info("Sent OTP via Twilio to %s", phone_number)
+        is_sandbox = username.lower() == 'sandbox'
+        url = "https://api.sandbox.africastalking.com/version1/messaging" if is_sandbox else "https://api.africastalking.com/version1/messaging"
+        
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "apiKey": api_key,
+        }
+        
+        payload = {
+            "username": username,
+            "to": phone_number,
+            "message": f"Your HAPA verification code is {code}",
+        }
+        
+        response = requests.post(url, headers=headers, data=payload)
+        response.raise_for_status()
+        
+        logger.info("Sent OTP via Africa's Talking to %s", phone_number)
     except Exception as exc:
-        logger.exception("Failed to send OTP via Twilio: %s", exc)
+        logger.exception("Failed to send OTP via Africa's Talking: %s", exc)
         # Fallback to logging so devs can still see the code
         _send_otp_via_log(phone_number, code)
 
@@ -56,13 +66,13 @@ def send_otp(phone_number: str, code: str) -> None:
     Send an OTP via SMS.
 
     Provider is selected using SMS_PROVIDER env:
-    - log    -> log the OTP (development)
-    - twilio -> send via Twilio
+    - log            -> log the OTP (development)
+    - africastalking -> send via Africa's Talking
     """
     provider = os.getenv("SMS_PROVIDER", "log").lower()
 
-    if provider == "twilio":
-        _send_otp_via_twilio(phone_number, code)
+    if provider == "africastalking":
+        _send_otp_via_africastalking(phone_number, code)
     elif provider == "log":
         _send_otp_via_log(phone_number, code)
     else:

@@ -3,10 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.21.0";
 import { z } from "https://deno.land/x/zod@v3.21.4/mod.ts";
 import { checkRateLimit, rateLimitHeaders } from "../_shared/rateLimit.ts";
 
-const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-sub-path",
-};
+import { corsHeaders } from "../_shared/cors.ts";
 
 const OtpRequestSchema = z.object({
     phone_number: z.string().min(10),
@@ -20,7 +17,10 @@ const OtpVerifySchema = z.object({
 const MAX_OTP_ATTEMPTS = 5;
 
 serve(async (req) => {
-    if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+    const origin = req.headers.get("Origin");
+    const headers = corsHeaders(origin);
+
+    if (req.method === "OPTIONS") return new Response("ok", { headers });
 
     try {
         const supabaseAdmin = createClient(
@@ -38,7 +38,7 @@ serve(async (req) => {
             console.error("[Deno Auth] Error: SUPABASE_SERVICE_ROLE_KEY is missing!");
             return new Response(JSON.stringify({ error: "Server configuration error" }), {
                 status: 500,
-                headers: { ...corsHeaders, "Content-Type": "application/json" }
+                headers: { ...headers, "Content-Type": "application/json" }
             });
         }
 
@@ -51,7 +51,7 @@ serve(async (req) => {
             if (!rl.allowed) {
                 return new Response(JSON.stringify({ error: "Too many OTP requests. Please wait before trying again." }), {
                     status: 429,
-                    headers: { ...corsHeaders, "Content-Type": "application/json", ...rateLimitHeaders(rl.remaining, rl.retryAfterMs) },
+                    headers: { ...headers, "Content-Type": "application/json", ...rateLimitHeaders(rl.remaining, rl.retryAfterMs) },
                 });
             }
 
@@ -67,13 +67,60 @@ serve(async (req) => {
             });
             if (error) throw error;
 
-            console.log(`[Deno OTP] ${code} -> ${phone_number}`);
+            console.log(`[Deno OTP] Generated OTP for ${phone_number}`);
+
+            // Send via Africa's Talking
+            const atUsername = Deno.env.get("AFRICASTALKING_USERNAME");
+            const atApiKey = Deno.env.get("AFRICASTALKING_API_KEY");
+            
+            if (atUsername && atApiKey) {
+                const isSandbox = atUsername === 'sandbox';
+                const atUrl = isSandbox 
+                    ? "https://api.sandbox.africastalking.com/version1/messaging" 
+                    : "https://api.africastalking.com/version1/messaging";
+                
+                // Africa's Talking strictly requires the '+' prefix for international numbers (e.g. Kenya)
+                let atPhoneNumber = phone_number.trim();
+                if (!atPhoneNumber.startsWith('+')) {
+                    atPhoneNumber = '+' + atPhoneNumber;
+                }
+
+                const bodyMsg = new URLSearchParams({
+                    username: atUsername,
+                    to: atPhoneNumber,
+                    message: `Your HAPA verification code is ${code}`
+                });
+
+                try {
+                    const smsRes = await fetch(atUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Accept': 'application/json',
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                            'apiKey': atApiKey
+                        },
+                        body: bodyMsg.toString()
+                    });
+                    
+                    if (!smsRes.ok) {
+                        const errText = await smsRes.text();
+                        console.error("[Deno OTP] Africa's Talking Error:", errText);
+                    } else {
+                        console.log(`[Deno OTP] SMS sent via Africa's Talking to ${phone_number}`);
+                    }
+                } catch (smsErr) {
+                    console.error("[Deno OTP] Africa's Talking Exception:", smsErr);
+                }
+            } else {
+                console.warn("[Deno OTP] AFRICASTALKING_USERNAME or AFRICASTALKING_API_KEY is not set. OTP logged locally only.");
+                console.log(`[Deno OTP] FALLBACK LOG OTP: ${code} -> ${phone_number}`);
+            }
 
             return new Response(JSON.stringify({
                 success: true,
-                otp: code
+                message: "OTP sent successfully"
             }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
@@ -86,7 +133,7 @@ serve(async (req) => {
             if (!rl.allowed) {
                 return new Response(JSON.stringify({ error: "Too many verification attempts. Please wait." }), {
                     status: 429,
-                    headers: { ...corsHeaders, "Content-Type": "application/json", ...rateLimitHeaders(rl.remaining, rl.retryAfterMs) },
+                    headers: { ...headers, "Content-Type": "application/json", ...rateLimitHeaders(rl.remaining, rl.retryAfterMs) },
                 });
             }
 
@@ -102,7 +149,7 @@ serve(async (req) => {
             if (otpError || !otpRows?.length) {
                 return new Response(JSON.stringify({ error: "Invalid or expired code" }), {
                     status: 400,
-                    headers: { ...corsHeaders, "Content-Type": "application/json" }
+                    headers: { ...headers, "Content-Type": "application/json" }
                 });
             }
 
@@ -113,7 +160,7 @@ serve(async (req) => {
             if (attempts >= MAX_OTP_ATTEMPTS) {
                 return new Response(JSON.stringify({ error: "Too many failed attempts. Please request a new code." }), {
                     status: 429,
-                    headers: { ...corsHeaders, "Content-Type": "application/json" }
+                    headers: { ...headers, "Content-Type": "application/json" }
                 });
             }
 
@@ -132,7 +179,7 @@ serve(async (req) => {
                         : "Too many failed attempts. Please request a new code."
                 }), {
                     status: 400,
-                    headers: { ...corsHeaders, "Content-Type": "application/json" }
+                    headers: { ...headers, "Content-Type": "application/json" }
                 });
             }
 
@@ -147,57 +194,93 @@ serve(async (req) => {
             }
 
             const dummyEmail = `${normalized}@hapa-venue.app`;
-            const dummyPassword = `hapa_${normalized}_pw`;
+            const dummyPassword = `hapa_${normalized}_pw`; // The old predictable password
 
-            // 1. Try to sign in first (if user already exists)
-            let { data: authData, error: authError } = await supabaseAdmin.auth.signInWithPassword({
-                email: dummyEmail,
-                password: dummyPassword,
-            });
+            // 1. Generate a secure deterministic password
+            // Users will never type this; they only log in via OTPs
+            const hasher = new TextEncoder().encode(dummyEmail + "hapa_secure_salt_" + (Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "fallback"));
+            const hashBuffer = await crypto.subtle.digest("SHA-256", hasher);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            const securePassword = hashArray.map((b: number) => b.toString(16).padStart(2, "0")).join("") + "Aa!1";
 
-            // 2. If sign-in fails, create the account
-            if (authError || !authData.session) {
-                const { data: newUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
-                    email: dummyEmail,
-                    password: dummyPassword,
-                    email_confirm: true,
-                });
+            // 2. See if we know the user ID or phone number in our public.users table
+            const { data: pubUserByPhone } = await supabaseAdmin.from("users").select("id").eq("phone_number", phone_number).maybeSingle();
+            let authUserId = pubUserByPhone?.id;
 
-                if (createError && createError.message !== "A user with this email address has already been registered") {
-                    console.error("Could not create Supabase auth user:", createError.message);
-                    return new Response(JSON.stringify({ error: "Failed to create user account: " + createError.message }), { status: 500, headers: corsHeaders });
-                }
+            if (authUserId) {
+                 // User exists in public.users, ensures their Auth password is correct
+                 await supabaseAdmin.auth.admin.updateUserById(authUserId, {
+                     password: securePassword
+                 });
+            } else {
+                 // No user in public.users, but they might still exist in Supabase Auth (e.g. database was cleared)
+                 // We can't use getUserByEmail, so we try to create them first.
+                 const { data: newUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
+                     email: dummyEmail,
+                     password: securePassword,
+                     email_confirm: true,
+                 });
 
-                // Sign in again
-                const signInRetry = await supabaseAdmin.auth.signInWithPassword({
-                    email: dummyEmail,
-                    password: dummyPassword,
-                });
-
-                authData = signInRetry.data;
-                authError = signInRetry.error;
-
-                if (authError || !authData.session) {
-                    console.error("Retry sign-in failed:", authError?.message);
-                    return new Response(JSON.stringify({ error: "Failed to generate session tokens: " + authError?.message }), { status: 500, headers: corsHeaders });
-                }
+                 if (createError) {
+                      // If it fails because they already exist in auth, let's try to sign in with the old dummy password to find their ID
+                      const { data: oldAuthData } = await supabaseAdmin.auth.signInWithPassword({
+                          email: dummyEmail,
+                          password: dummyPassword,
+                      });
+                      
+                      if (oldAuthData?.user?.id) {
+                          authUserId = oldAuthData.user.id;
+                          await supabaseAdmin.auth.admin.updateUserById(authUserId, {
+                              password: securePassword
+                          });
+                      } else {
+                          // Try signing in with the securePassword in case we already migrated them
+                          const { data: currentAuthData } = await supabaseAdmin.auth.signInWithPassword({
+                              email: dummyEmail,
+                              password: securePassword,
+                          });
+                          if (!currentAuthData?.user?.id) {
+                               console.error("Could not create/lookup auth user:", createError.message);
+                               return new Response(JSON.stringify({ error: "Failed to create user account: " + createError.message }), { status: 500, headers });
+                          }
+                      }
+                 }
             }
 
+            // 3. Now sign in the user
+            const { data: authData, error: authError } = await supabaseAdmin.auth.signInWithPassword({
+                email: dummyEmail,
+                password: securePassword,
+            });
+
+            if (authError || !authData.session) {
+                console.error("Sign-in failed:", authError?.message);
+                return new Response(JSON.stringify({ error: "Failed to generate session tokens: " + authError?.message }), { status: 500, headers });
+            }
             const { session, user } = authData;
 
-            // 3. Upsert into public.users
+            // 4. Sync profile to public.users (Our single source of truth)
             if (user) {
+                console.log(`[Deno Auth] Syncing profile for user ${user.id} (${phone_number})`);
+
                 const { error: upsertError } = await supabaseAdmin.from("users").upsert({
                     id: user.id,
                     phone_number: phone_number,
                     role: "venue_owner",
-                    updated_at: new Date().toISOString()
+                    status: "active"
                 }, { onConflict: "id" });
 
                 if (upsertError) {
-                    console.error("Could not upsert user:", upsertError);
+                    console.error("[Deno Auth] Critical: Could not upsert user into public.users:", upsertError.message);
+                    return new Response(JSON.stringify({ 
+                        error: "Profile synchronization failed.",
+                        details: `${upsertError.message} (ID: ${user.id})` 
+                    }), { status: 500, headers });
                 }
             }
+
+            // 5. Delete the used OTP row — keeps the table clean and prevents re-use
+            await supabaseAdmin.from("otp_codes").delete().eq("id", otpRecord.id);
 
             return new Response(JSON.stringify({
                 success: true,
@@ -205,7 +288,7 @@ serve(async (req) => {
                 refresh_token: session.refresh_token,
                 user: user
             }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
@@ -215,7 +298,7 @@ serve(async (req) => {
             if (!access_token) {
                 return new Response(JSON.stringify({ error: "Missing access_token" }), {
                     status: 400,
-                    headers: { ...corsHeaders, "Content-Type": "application/json" }
+                    headers: { ...headers, "Content-Type": "application/json" }
                 });
             }
 
@@ -228,7 +311,7 @@ serve(async (req) => {
                     details: userError?.message
                 }), {
                     status: 401,
-                    headers: { ...corsHeaders, "Content-Type": "application/json" }
+                    headers: { ...headers, "Content-Type": "application/json" }
                 });
             }
 
@@ -239,7 +322,35 @@ serve(async (req) => {
                 refresh_token: "supabase-refresh-token-managed-by-client",
                 user
             }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
+            });
+        }
+
+        // --- ROUTE: DELETE /delete-account ---
+        if (req.method === "DELETE" && path === "delete-account") {
+            const authHeader = req.headers.get("Authorization");
+            if (!authHeader) {
+                return new Response(JSON.stringify({ error: "Missing authorization header" }), { status: 401, headers });
+            }
+
+            const token = authHeader.replace("Bearer ", "");
+            const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+
+            if (authError || !user) {
+                return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers });
+            }
+
+            // Delete the user from Supabase Auth
+            // Foreign keys in public.users etc should cascade, but the root delete is here.
+            const { error: deleteError } = await supabaseAdmin.auth.admin.deleteUser(user.id);
+
+            if (deleteError) {
+                console.error(`[Deno Auth] Error deleting user ${user.id}: ${deleteError.message}`);
+                return new Response(JSON.stringify({ error: "Failed to delete account" }), { status: 500, headers });
+            }
+
+            return new Response(JSON.stringify({ success: true, message: "Account deleted successfully" }), {
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
@@ -248,7 +359,7 @@ serve(async (req) => {
     } catch (error: any) {
         return new Response(JSON.stringify({ error: error.message }), {
             status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            headers: { ...headers, "Content-Type": "application/json" },
         });
     }
 });

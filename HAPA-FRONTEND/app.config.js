@@ -7,13 +7,13 @@ export default {
         version: '1.0.0',
         orientation: 'portrait',
         icon: './assets/images/hapalogo.png',
-        scheme: 'hapatemp',
+        scheme: 'hapapp',
         userInterfaceStyle: 'automatic',
         newArchEnabled: true,
         splash: {
             image: './assets/images/hapalogo.png',
             resizeMode: 'contain',
-            backgroundColor: '#FFFFFF'
+            backgroundColor: '#141414'
         },
         ios: {
             supportsTablet: true,
@@ -36,6 +36,13 @@ export default {
                 'READ_MEDIA_IMAGES',
                 'READ_MEDIA_VIDEO',
                 'READ_MEDIA_VISUAL_USER_SELECTED',
+            ],
+            intentFilters: [
+                {
+                    action: 'VIEW',
+                    data: [{ scheme: 'hapapp' }],
+                    category: ['BROWSABLE', 'DEFAULT'],
+                },
             ],
         },
         web: {

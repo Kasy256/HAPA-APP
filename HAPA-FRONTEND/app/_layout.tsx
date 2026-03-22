@@ -12,6 +12,7 @@ import { GlobalUploadProgress } from '@/components/GlobalUploadProgress';
 import { useColorScheme } from '@/components/useColorScheme';
 import { UploadProvider } from '@/contexts/UploadContext';
 import { clearAuthTokens, getAccessToken, loginWithSupabase, saveAuthTokens } from '@/lib/api';
+import * as SecureStore from 'expo-secure-store';
 import { signInAnonymously, supabase } from '@/lib/supabaseClient';
 
 export {
@@ -71,12 +72,13 @@ export default function RootLayout() {
       if (existingToken) {
         console.log('[Auth] Found stored token, restoring session...');
         try {
+          const refreshToken = await SecureStore.getItemAsync('hapa_refresh_token') || '';
           const { data: { user }, error } = await supabase.auth.getUser(existingToken);
           if (!error && user) {
             console.log('[Auth] Stored token is valid. Setting session...');
             await supabase.auth.setSession({
               access_token: existingToken,
-              refresh_token: '',
+              refresh_token: refreshToken,
             });
             return;
           }

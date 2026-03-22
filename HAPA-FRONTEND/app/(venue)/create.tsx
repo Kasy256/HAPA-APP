@@ -7,9 +7,11 @@ import * as Haptics from 'expo-haptics';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import React, { useCallback, useRef, useState } from 'react';
-import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Image, StyleSheet, Text, TouchableOpacity, View, Alert } from 'react-native';
 
+import { PaywallModal } from '@/components/PaywallModal';
 import { apiFetch } from '@/lib/api';
+import { useSubscription } from '@/hooks/useSubscription';
 import { uploadMedia } from '@/lib/supabaseClient';
 
 function VideoPreview({ uri }: { uri: string }) {
@@ -48,11 +50,22 @@ export default function CreatePostScreen() {
     const [facing, setFacing] = useState<'back' | 'front'>('back');
     const [isRecording, setIsRecording] = useState(false);
 
+    const subscription = useSubscription();
+    const [showPaywall, setShowPaywall] = useState(false);
+
     // Preview State
     const [capturedMedia, setCapturedMedia] = useState<{ uri: string; type: 'photo' | 'video' } | null>(null);
 
     // Whether we are currently mid-upload (prevents double-tapping Post)
     const isUploading = uploadState === 'uploading';
+
+    const checkLimit = () => {
+        if (!subscription.loading && !subscription.canPost && !subscription.isUnlimited) {
+            setShowPaywall(true);
+            return false;
+        }
+        return true;
+    };
 
 
 
@@ -81,6 +94,7 @@ export default function CreatePostScreen() {
     }
 
     async function handleCapture() {
+        if (!checkLimit()) return;
         if (!cameraRef.current) return;
 
         if (mode === 'Photo') {
@@ -161,15 +175,32 @@ export default function CreatePostScreen() {
                                         type: mediaType
                                     });
                                     console.log(`[CreatePost] Upload done. Creating record...`);
-                                    await apiFetch('/api/posts', {
-                                        method: 'POST',
-                                        auth: true,
-                                        body: JSON.stringify({
-                                            media_type: mediaType,
-                                            media_url: publicUrl,
-                                        }),
-                                    });
-                                    console.log(`[CreatePost] Post record created.`);
+                                    try {
+                                        await apiFetch('/api/posts', {
+                                            method: 'POST',
+                                            auth: true,
+                                            body: JSON.stringify({
+                                                media_type: mediaType,
+                                                media_url: publicUrl,
+                                            }),
+                                        });
+                                        console.log(`[CreatePost] Post record created.`);
+                                        // Refresh subscription to update counter
+                                        subscription.refresh().catch(() => { });
+                                    } catch (err: any) {
+                                        console.error(`[CreatePost] API Insert failure:`, err);
+                                        if (err.message === 'Post limit reached') {
+                                            Alert.alert(
+                                                "Post Limit Reached",
+                                                "Free venues are limited to 3 vibes per day. Upgrade to Pro for unlimited posts!",
+                                                [
+                                                    { text: "Later", style: "cancel" },
+                                                    { text: "Upgrade Now", onPress: () => router.push('/(venue)/subscription') }
+                                                ]
+                                            );
+                                        }
+                                        throw err; // Signal failure to UploadContext
+                                    }
                                     // Haptic on success
                                     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                                 }
@@ -238,6 +269,13 @@ export default function CreatePostScreen() {
                     <View style={styles.controlSpacer} />
                 </View>
             </View>
+            {/* Paywall Overlay */}
+            <PaywallModal
+                visible={showPaywall}
+                onClose={() => setShowPaywall(false)}
+                reason="post_limit"
+                postsToday={subscription.postsToday}
+            />
         </View>
     );
 }

@@ -2,7 +2,7 @@ import { ScreenWrapper } from '@/components/ScreenWrapper';
 import { Colors } from '@/constants/Colors';
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Image, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { apiFetch, saveAuthTokens, setVenueOwner } from '@/lib/api';
@@ -12,23 +12,38 @@ import HapaLogo from '../assets/images/hapa.png';
 export default function OTPVerificationScreen() {
     const router = useRouter();
     const params = useLocalSearchParams();
-    const phoneNumber = params.phone as string || '1234567890';
+    const phoneNumber = params.phone as string;
+
+    // Guard: if we somehow arrived here without a phone number, go back
+    useEffect(() => {
+        if (!phoneNumber) {
+            router.back();
+        }
+    }, [phoneNumber]);
 
     const [otp, setOtp] = useState(['', '', '', '', '']);
     const [submitting, setSubmitting] = useState(false);
     const inputRefs = useRef<(TextInput | null)[]>([]);
+    const [resendCooldown, setResendCooldown] = useState(0);
 
     useEffect(() => {
         // Auto-focus first input on mount
         inputRefs.current[0]?.focus();
 
-        // If OTP was passed in params (dev mode), show it in a popup
-        if (params.otp) {
+        // If OTP was passed in params (only in dev mode), show it in a popup
+        if (__DEV__ && params.otp) {
             setTimeout(() => {
                 Alert.alert('Developer OTP', `Your verification code is: ${params.otp}\n\n(This popup only appears in development mode)`);
             }, 500);
         }
     }, [params.otp]);
+
+    // Resend cooldown countdown
+    useEffect(() => {
+        if (resendCooldown <= 0) return;
+        const timer = setTimeout(() => setResendCooldown(c => c - 1), 1000);
+        return () => clearTimeout(timer);
+    }, [resendCooldown]);
 
     const handleOtpChange = (value: string, index: number) => {
         if (value.length > 1) {
@@ -119,10 +134,33 @@ export default function OTPVerificationScreen() {
         }
     };
 
-    const handleResendOTP = () => {
-        Alert.alert('OTP Sent', `A new code has been sent to ${phoneNumber}`);
-        setOtp(['', '', '', '', '']);
-        inputRefs.current[0]?.focus();
+    const [resending, setResending] = useState(false);
+
+    const handleResendOTP = async () => {
+        if (resending || resendCooldown > 0) return;
+        try {
+            setResending(true);
+            await apiFetch('/api/auth/request-otp', {
+                method: 'POST',
+                body: JSON.stringify({ phone_number: phoneNumber }),
+            });
+            Alert.alert('OTP Sent', `A new code has been sent to ${phoneNumber}`);
+            setOtp(['', '', '', '', '']);
+            inputRefs.current[0]?.focus();
+            setResendCooldown(60); // 60-second cooldown to prevent SMS spam
+        } catch (error: any) {
+            // If the backend sends a retry-after suggestion, seed the cooldown from it
+            const retryMatch = error.message?.match(/(\d+)\s*second/);
+            const retrySecs = retryMatch ? parseInt(retryMatch[1], 10) : 60;
+            if (error.message?.includes('Too many') || error.message?.includes('Rate limit')) {
+                setResendCooldown(retrySecs);
+                Alert.alert('Too Many Requests', `Please wait ${retrySecs} seconds before requesting a new code.`);
+            } else {
+                Alert.alert('Error', error.message || 'Failed to resend OTP');
+            }
+        } finally {
+            setResending(false);
+        }
     };
 
     return (
@@ -175,8 +213,10 @@ export default function OTPVerificationScreen() {
                 {/* Resend OTP */}
                 <View style={styles.resendSection}>
                     <Text style={styles.resendText}>Didn't receive code?</Text>
-                    <TouchableOpacity onPress={handleResendOTP}>
-                        <Text style={styles.resendButton}>Resend OTP</Text>
+                    <TouchableOpacity onPress={handleResendOTP} disabled={resending || resendCooldown > 0}>
+                        <Text style={[styles.resendButton, (resendCooldown > 0) && { opacity: 0.4 }]}>
+                            {resending ? 'Sending...' : resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend OTP'}
+                        </Text>
                     </TouchableOpacity>
                 </View>
             </View>

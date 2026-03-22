@@ -3,10 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.21.0";
 import { z } from "https://deno.land/x/zod@v3.21.4/mod.ts";
 import { checkRateLimit, rateLimitHeaders } from "../_shared/rateLimit.ts";
 
-const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-sub-path",
-};
+import { corsHeaders } from "../_shared/cors.ts";
 
 const parseNumber = (val: unknown) => {
     if (typeof val === 'string' && val.trim() !== '') {
@@ -32,13 +29,30 @@ const SearchSchema = z.object({
 });
 
 serve(async (req) => {
-    if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+    const origin = req.headers.get("Origin");
+    const headers = corsHeaders(origin);
+
+    if (req.method === "OPTIONS") return new Response("ok", { headers });
 
     // Rate limit by client IP
     const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
 
     try {
+        // --- AUTHENTICATION HELPERS ---
         const authHeader = req.headers.get("Authorization") || `Bearer ${Deno.env.get("SUPABASE_ANON_KEY")}`;
+        const token = authHeader.replace('Bearer ', '');
+        let userId: string | undefined;
+        if (token && token !== Deno.env.get("SUPABASE_ANON_KEY")) {
+            // Need to initialize a client just to get the user
+            const tempClient = createClient(
+                Deno.env.get("SUPABASE_URL") ?? "",
+                Deno.env.get("SUPABASE_ANON_KEY") ?? "",
+                { global: { headers: { Authorization: authHeader } } }
+            );
+            const { data } = await tempClient.auth.getUser(token);
+            userId = data.user?.id;
+        }
+
         const supabaseClient = createClient(
             Deno.env.get("SUPABASE_URL") ?? "",
             Deno.env.get("SUPABASE_ANON_KEY") ?? "",
@@ -63,7 +77,7 @@ serve(async (req) => {
             if (!rl.allowed) {
                 return new Response(JSON.stringify({ error: "Rate limit exceeded. Please slow down." }), {
                     status: 429,
-                    headers: { ...corsHeaders, "Content-Type": "application/json", ...rateLimitHeaders(rl.remaining, rl.retryAfterMs) },
+                    headers: { ...headers, "Content-Type": "application/json", ...rateLimitHeaders(rl.remaining, rl.retryAfterMs) },
                 });
             }
 
@@ -82,8 +96,21 @@ serve(async (req) => {
 
                 const posts = (venues || []).flatMap((v: any) => v.posts || []).filter((p: any) => new Date(p.expires_at) > new Date());
 
+                // Populate is_liked
+                if (userId && posts.length > 0) {
+                    const postIds = posts.map((p: any) => p.id);
+                    const { data: likes } = await supabaseAdmin
+                        .from("post_likes")
+                        .select("post_id")
+                        .eq("user_id", userId)
+                        .in("post_id", postIds);
+
+                    const likedSet = new Set(likes?.map(l => l.post_id) || []);
+                    posts.forEach((p: any) => p.is_liked = likedSet.has(p.id));
+                }
+
                 return new Response(JSON.stringify({ venues, posts }), {
-                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                    headers: { ...headers, "Content-Type": "application/json" },
                 });
             }
 
@@ -97,38 +124,83 @@ serve(async (req) => {
 
                 if (rpcError) throw rpcError;
 
-                const venueIds = (nearbyData || []).map((v: any) => v.venue_id);
+                // The RPC already returns pre-ranked venues with their latest post info.
+                // We map it to the structure the frontend expects { venues, posts }.
+                const venues = (nearbyData || []).map((v: any) => ({
+                    id: v.venue_id,
+                    name: v.venue_name,
+                    area: v.venue_area,
+                    type: v.venue_type,
+                    images: v.venue_images,
+                    location: v.venue_location,
+                    lat: v.venue_location?.coordinates?.[1],
+                    lng: v.venue_location?.coordinates?.[0],
+                    dist_meters: v.dist_meters,
+                    tier: v.tier,
+                    is_boosted: v.is_boosted,
+                }));
 
-                const { data: venues, error: venuesError } = await supabaseAdmin
-                    .from("venues")
-                    .select("*, posts(*)")
-                    .in("id", venueIds)
-                    .eq("is_deleted", false)
-                    .eq("posts.is_deleted", false);
+                const posts = (nearbyData || []).filter((v: any) => v.latest_post_url).map((v: any) => ({
+                    id: `post_${v.venue_id}_${v.latest_post_created}`,
+                    venue_id: v.venue_id,
+                    media_url: v.latest_post_url,
+                    media_type: v.latest_post_type,
+                    created_at: v.latest_post_created,
+                }));
 
-                if (venuesError) throw venuesError;
+                // Populate is_liked
+                if (userId && posts.length > 0) {
+                    const postIds = posts.map((p: any) => p.id);
+                    const { data: likes } = await supabaseAdmin
+                        .from("post_likes")
+                        .select("post_id")
+                        .eq("user_id", userId)
+                        .in("post_id", postIds);
 
-                const posts = (venues || []).flatMap((v: any) => v.posts || []).filter((p: any) => new Date(p.expires_at) > new Date());
+                    const likedSet = new Set(likes?.map(l => l.post_id) || []);
+                    posts.forEach((p: any) => p.is_liked = likedSet.has(p.id));
+                }
 
                 return new Response(JSON.stringify({ venues, posts }), {
-                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                    headers: { ...headers, "Content-Type": "application/json" },
                 });
             }
 
-            // Fallback: Just get some venues
-            const { data: venues, error } = await supabaseAdmin
-                .from("venues")
-                .select("*, posts(*)")
+            // Fallback & City: Use a ranked query to ensure paid tiers come first even without lat/lng
+            const cityQuery = city ? supabaseAdmin.from("venues").select("*, posts(*)").ilike("city", `%${city}%`) : supabaseAdmin.from("venues").select("*, posts(*)");
+            
+            const { data: rawVenues, error } = await cityQuery
                 .eq("is_deleted", false)
                 .eq("posts.is_deleted", false)
                 .limit(50);
 
             if (error) throw error;
 
+            // Sort by tier manually since PostgREST doesn't support complex case-based ordering easily
+            const tierWeight: Record<string, number> = { elite: 1, pro: 2, free: 3 };
+            const venues = (rawVenues || []).sort((a: any, b: any) => {
+                const tierA = a.tier || 'free';
+                const tierB = b.tier || 'free';
+                return (tierWeight[tierA] || 3) - (tierWeight[tierB] || 3);
+            });
+
             const posts = (venues || []).flatMap((v: any) => v.posts || []).filter((p: any) => new Date(p.expires_at) > new Date());
 
+            // Populate is_liked
+            if (userId && posts.length > 0) {
+                const postIds = posts.map((p: any) => p.id);
+                const { data: likes } = await supabaseAdmin
+                    .from("post_likes")
+                    .select("post_id")
+                    .eq("user_id", userId)
+                    .in("post_id", postIds);
+
+                const likedSet = new Set(likes?.map(l => l.post_id) || []);
+                posts.forEach((p: any) => p.is_liked = likedSet.has(p.id));
+            }
+
             return new Response(JSON.stringify({ venues, posts }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
@@ -139,7 +211,7 @@ serve(async (req) => {
             if (!rl.allowed) {
                 return new Response(JSON.stringify({ error: "Rate limit exceeded. Please slow down." }), {
                     status: 429,
-                    headers: { ...corsHeaders, "Content-Type": "application/json", ...rateLimitHeaders(rl.remaining, rl.retryAfterMs) },
+                    headers: { ...headers, "Content-Type": "application/json", ...rateLimitHeaders(rl.remaining, rl.retryAfterMs) },
                 });
             }
 
@@ -166,19 +238,19 @@ serve(async (req) => {
             // The venues table has lat/lng or location.
 
             return new Response(JSON.stringify({ venues: results }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
         return new Response(JSON.stringify({ error: `Not Found: ${path}` }), {
             status: 404,
-            headers: { ...corsHeaders, "Content-Type": "application/json" }
+            headers: { ...headers, "Content-Type": "application/json" }
         });
 
     } catch (error: any) {
         return new Response(JSON.stringify({ error: error.message }), {
             status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            headers: { ...headers, "Content-Type": "application/json" },
         });
     }
 });

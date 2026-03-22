@@ -1,13 +1,26 @@
 
 import { ScreenWrapper } from '@/components/ScreenWrapper';
+import { PaywallModal } from '@/components/PaywallModal';
 import { Colors } from '@/constants/Colors';
+import { useSubscription } from '@/hooks/useSubscription';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import React from 'react';
+import React, { useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 export default function CreatePostScreen() {
     const router = useRouter();
+    const subscription = useSubscription();
+    const [showPaywall, setShowPaywall] = useState(false);
+
+    const handleShareVibe = () => {
+        // Gate: check post limit before allowing submit
+        if (!subscription.loading && !subscription.canPost && !subscription.isUnlimited) {
+            setShowPaywall(true);
+            return;
+        }
+        // TODO: actual post submit logic goes here
+    };
 
     return (
         <ScreenWrapper style={styles.container}>
@@ -29,9 +42,26 @@ export default function CreatePostScreen() {
                 </TouchableOpacity>
             </View>
 
-            <TouchableOpacity style={styles.postButton}>
+            {/* Post limit indicator for free tier */}
+            {!subscription.loading && subscription.tier === 'free' && (
+                <View style={styles.limitRow}>
+                    <Ionicons name="flash-outline" size={14} color="rgba(255,255,255,0.4)" />
+                    <Text style={styles.limitText}>
+                        {subscription.postsToday}/3 posts today (free plan)
+                    </Text>
+                </View>
+            )}
+
+            <TouchableOpacity style={styles.postButton} onPress={handleShareVibe}>
                 <Text style={styles.postButtonText}>Share Vibe</Text>
             </TouchableOpacity>
+
+            <PaywallModal
+                visible={showPaywall}
+                onClose={() => setShowPaywall(false)}
+                reason="post_limit"
+                postsToday={subscription.postsToday}
+            />
         </ScreenWrapper>
     );
 }
@@ -80,6 +110,17 @@ const styles = StyleSheet.create({
     },
     selectButtonText: {
         color: Colors.text.primary,
+    },
+    limitRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        justifyContent: 'center',
+        marginBottom: 8,
+    },
+    limitText: {
+        fontSize: 12,
+        color: 'rgba(255,255,255,0.4)',
     },
     postButton: {
         backgroundColor: Colors.cta.primary,

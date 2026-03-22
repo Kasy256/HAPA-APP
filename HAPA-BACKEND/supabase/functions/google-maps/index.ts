@@ -1,10 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { z } from "https://deno.land/x/zod@v3.21.4/mod.ts";
-
-const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-sub-path",
-};
+import { checkRateLimit, rateLimitHeaders } from "../_shared/rateLimit.ts";
+import { corsHeaders } from "../_shared/cors.ts";
 
 const parseNumber = (val: unknown) => {
     if (typeof val === 'string' && val.trim() !== '') {
@@ -21,8 +18,11 @@ const QuerySchema = z.object({
 });
 
 serve(async (req) => {
+    const origin = req.headers.get("Origin");
+    const headers = corsHeaders(origin);
+
     if (req.method === "OPTIONS") {
-        return new Response("ok", { headers: corsHeaders });
+        return new Response("ok", { headers });
     }
 
     try {
@@ -35,17 +35,27 @@ serve(async (req) => {
         if (!apiKey) {
             return new Response(JSON.stringify({ error: "Maps API key not configured" }), {
                 status: 500,
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
         // --- ROUTE: /autocomplete or /suggest (backward compatibility) ---
         if (path === "autocomplete" || path === "suggest" || !path) {
+            // Rate limit: max 30 autocomplete calls per IP per minute
+            const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+            const rl = checkRateLimit(`gmaps-autocomplete:${clientIp}`, 30, 60_000);
+            if (!rl.allowed) {
+                return new Response(JSON.stringify({ error: "Rate limit exceeded. Please slow down." }), {
+                    status: 429,
+                    headers: { ...headers, "Content-Type": "application/json", ...rateLimitHeaders(rl.remaining, rl.retryAfterMs) },
+                });
+            }
+
             const validated = QuerySchema.safeParse(params);
             if (!validated.success) {
                 return new Response(JSON.stringify({ error: validated.error }), {
                     status: 400,
-                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                    headers: { ...headers, "Content-Type": "application/json" },
                 });
             }
 
@@ -67,7 +77,7 @@ serve(async (req) => {
             if (data.status !== "OK" && data.status !== "ZERO_RESULTS") {
                 return new Response(JSON.stringify({ error: data.error_message || "Google API error" }), {
                     status: 502,
-                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                    headers: { ...headers, "Content-Type": "application/json" },
                 });
             }
 
@@ -79,15 +89,25 @@ serve(async (req) => {
             }));
 
             return new Response(JSON.stringify({ suggestions }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
         // --- ROUTE: /details ---
         if (path === "details") {
+            // Rate limit: max 20 place details calls per IP per minute
+            const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+            const rl = checkRateLimit(`gmaps-details:${clientIp}`, 20, 60_000);
+            if (!rl.allowed) {
+                return new Response(JSON.stringify({ error: "Rate limit exceeded. Please slow down." }), {
+                    status: 429,
+                    headers: { ...headers, "Content-Type": "application/json", ...rateLimitHeaders(rl.remaining, rl.retryAfterMs) },
+                });
+            }
+
             const placeId = params.place_id;
             if (!placeId) {
-                return new Response(JSON.stringify({ error: "place_id is required" }), { status: 400, headers: corsHeaders });
+                return new Response(JSON.stringify({ error: "place_id is required" }), { status: 400, headers });
             }
 
             const googleUrl = new URL("https://maps.googleapis.com/maps/api/place/details/json");
@@ -101,7 +121,7 @@ serve(async (req) => {
             if (data.status !== "OK") {
                 return new Response(JSON.stringify({ error: data.error_message || "Google API error" }), {
                     status: 502,
-                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                    headers: { ...headers, "Content-Type": "application/json" },
                 });
             }
 
@@ -131,14 +151,14 @@ serve(async (req) => {
                 area: area,
                 country: country,
             }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
     } catch (error) {
         return new Response(JSON.stringify({ error: error.message }), {
             status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            headers: { ...headers, "Content-Type": "application/json" },
         });
     }
 });

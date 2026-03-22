@@ -60,8 +60,11 @@ export function calculateDistance(lat1: number, lon1: number, lat2: number, lon2
     Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
     Math.sin(dLon / 2) * Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  const d = R * c; // Distance in km
-  return d;
+  const straightLineDistance = R * c; // Distance in km
+  
+  // Apply a "routing penalty" - roads are rarely straight lines.
+  // A common multiplier for city environments is ~1.35 to 1.4
+  return straightLineDistance * 1.35;
 }
 
 function deg2rad(deg: number): number {
@@ -72,21 +75,17 @@ function deg2rad(deg: number): number {
 export function estimateTravelTime(lat1: number, lon1: number, lat2: number, lon2: number): string {
   const distance = calculateDistance(lat1, lon1, lat2, lon2);
 
-  // City driving speed tiers (accounts for traffic, stops, etc.)
-  // < 1 km  → very close, ~15 km/h (short hops, parking, etc.)
-  // 1-5 km  → city center, ~20 km/h (traffic + signals)
-  // 5-15 km → suburban, ~30 km/h
-  // > 15 km → highway mix, ~40 km/h
-
+  // City driving speed tiers (accounts for traffic, stops, routing inefficiency)
+  // Adjusted downward to be more realistic and match GPS mapping
   let speed: number;
   if (distance < 1) {
-    speed = 15;
+    speed = 10; // ~10 km/h: very close, walking/parking speed, many stops
   } else if (distance < 5) {
-    speed = 20;
+    speed = 15; // ~15 km/h: city center, heavy traffic, traffic lights
   } else if (distance < 15) {
-    speed = 30;
+    speed = 22; // ~22 km/h: suburban, moderate traffic
   } else {
-    speed = 40;
+    speed = 35; // ~35 km/h: highway mix, longer uninterrupted stretches
   }
 
   const timeHours = distance / speed;

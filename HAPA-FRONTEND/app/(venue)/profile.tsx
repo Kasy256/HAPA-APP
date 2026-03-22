@@ -3,9 +3,10 @@ import { ScreenWrapper } from '@/components/ScreenWrapper';
 import { Colors } from '@/constants/Colors';
 import { Ionicons } from '@expo/vector-icons';
 import { apiFetch, clearAuthTokens } from '@/lib/api';
+import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -53,12 +54,63 @@ export default function VenueProfileScreen() {
     }, []);
 
     const handleSignOut = async () => {
-        await clearAuthTokens();
-        await AsyncStorage.removeItem('hapa_launch_preference');
-        while (router.canGoBack()) {
-            router.back();
+        try {
+            console.log('[Logout] Initiating full sign out...');
+
+            // 1. Clear Supabase session
+            const { error: signOutError } = await supabase.auth.signOut();
+            if (signOutError) console.warn('[Logout] Supabase signOut warning:', signOutError.message);
+
+            // 2. Clear custom auth tokens
+            await clearAuthTokens();
+
+            // 3. Remove launch preference — must complete before navigation
+            await AsyncStorage.removeItem('hapa_launch_preference');
+
+            // 4. Small flush to ensure AsyncStorage writes commit
+            await new Promise(resolve => setTimeout(resolve, 50));
+
+            console.log('[Logout] Cleared. Navigating to start...');
+            router.replace('/');
+
+        } catch (err) {
+            console.error('[Logout] Critical failure:', err);
+            // Attempt cleanup even on failure
+            await AsyncStorage.removeItem('hapa_launch_preference').catch(() => {});
+            router.replace('/');
         }
-        router.replace('/');
+    };
+
+    const handleDeleteAccount = () => {
+        Alert.alert(
+            "Delete Account",
+            "Are you absolutely sure you want to delete your account? This action is permanent and will delete all your venues, vibes, and subscription data. This cannot be undone.",
+            [
+                { text: "Cancel", style: "cancel" },
+                {
+                    text: "Delete Forever",
+                    style: "destructive",
+                    onPress: async () => {
+                        try {
+                            Alert.alert("Deleting...", "Please wait while we delete your account.");
+
+                            await apiFetch('/api/auth/delete-account', { method: 'DELETE', auth: true });
+
+                            // Clear everything before navigating
+                            await supabase.auth.signOut();
+                            await clearAuthTokens();
+                            await AsyncStorage.removeItem('hapa_launch_preference');
+                            await new Promise(resolve => setTimeout(resolve, 50));
+
+                            router.replace('/');
+
+                        } catch (error: any) {
+                            Alert.alert("Error", error.message || "Failed to delete account. Please contact support.");
+                        }
+                    }
+                }
+            ]
+        );
     };
 
     // NOTE: We intentionally do NOT track a view here.
@@ -68,6 +120,24 @@ export default function VenueProfileScreen() {
     if (!venue && !loading) {
         return (
             <ScreenWrapper>
+                {/* Header Actions still visible here */}
+                <View style={styles.headerActions}>
+                    <TouchableOpacity
+                        style={styles.iconButton}
+                        activeOpacity={0.7}
+                        onPress={handleSignOut}
+                    >
+                        <Ionicons name="log-out-outline" size={24} color="white" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={[styles.iconButton, { marginTop: 12, backgroundColor: 'rgba(255,59,48,0.1)' }]}
+                        activeOpacity={0.7}
+                        onPress={handleDeleteAccount}
+                    >
+                        <Ionicons name="trash-outline" size={24} color="#FF3B30" />
+                    </TouchableOpacity>
+                </View>
+
                 <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
                     <Text style={{ color: Colors.text.primary, textAlign: 'center', marginBottom: 16 }}>
                         No venue profile found yet.
@@ -104,6 +174,13 @@ export default function VenueProfileScreen() {
                         onPress={handleSignOut}
                     >
                         <Ionicons name="log-out-outline" size={24} color="white" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={[styles.iconButton, { marginTop: 12, backgroundColor: 'rgba(255,59,48,0.1)' }]}
+                        activeOpacity={0.7}
+                        onPress={handleDeleteAccount}
+                    >
+                        <Ionicons name="trash-outline" size={24} color="#FF3B30" />
                     </TouchableOpacity>
                 </View>
 

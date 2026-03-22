@@ -2,10 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.21.0";
 import { z } from "https://deno.land/x/zod@v3.21.4/mod.ts";
 
-const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-sub-path",
-};
+import { corsHeaders } from "../_shared/cors.ts";
 
 // --- SCHEMAS ---
 
@@ -87,7 +84,10 @@ async function verifyLocation(updates: Record<string, any>) {
 }
 
 serve(async (req) => {
-    if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+    const origin = req.headers.get("Origin");
+    const headers = corsHeaders(origin);
+
+    if (req.method === "OPTIONS") return new Response("ok", { headers });
 
     try {
         const authHeader = req.headers.get("Authorization") || `Bearer ${Deno.env.get("SUPABASE_ANON_KEY")}`;
@@ -124,7 +124,7 @@ serve(async (req) => {
 
             if (!venue) {
                 return new Response(JSON.stringify({ venue: null }), {
-                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                    headers: { ...headers, "Content-Type": "application/json" },
                 });
             }
 
@@ -146,7 +146,7 @@ serve(async (req) => {
             return new Response(JSON.stringify({
                 venue: { ...venue, metrics: mergedMetrics, total_metrics: totalMetrics }
             }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
@@ -161,7 +161,7 @@ serve(async (req) => {
 
             if (venueError) throw venueError;
             return new Response(JSON.stringify({ venue }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
@@ -189,7 +189,7 @@ serve(async (req) => {
                 }
             }
             return new Response(JSON.stringify({ success: true }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
@@ -205,17 +205,25 @@ serve(async (req) => {
             data = await verifyLocation(data);
 
             // Check if a venue already exists for this owner
-            const { data: existing } = await supabaseAdmin
-                .from("venues")
-                .select("id")
-                .eq("owner_id", user.id)
+            // Also grab their phone number to use as the default contact_phone
+            const { data: existingUser } = await supabaseAdmin
+                .from("users")
+                .select("id, phone_number, venues(id)")
+                .eq("id", user.id)
                 .maybeSingle();
 
-            if (existing) {
+            if (existingUser?.venues && existingUser.venues.length > 0) {
                 return new Response(JSON.stringify({ error: "A venue already exists for this account. Use PATCH to update it." }), {
                     status: 409,
-                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                    headers: { ...headers, "Content-Type": "application/json" },
                 });
+            }
+
+            if (!data.contact_phone && existingUser?.phone_number) {
+                data.contact_phone = existingUser.phone_number;
+            } else if (!data.contact_phone) {
+                // Fallback to avoid constraint error if phone_number is missing
+                data.contact_phone = "Not provided";
             }
 
             const { data: created, error: createError } = await supabaseClient
@@ -232,7 +240,7 @@ serve(async (req) => {
 
             return new Response(JSON.stringify({ venue: created }), {
                 status: 201,
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
@@ -252,7 +260,7 @@ serve(async (req) => {
             if (Object.keys(updates).length === 0) {
                 return new Response(JSON.stringify({ error: "No fields provided to update." }), {
                     status: 400,
-                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                    headers: { ...headers, "Content-Type": "application/json" },
                 });
             }
 
@@ -273,14 +281,14 @@ serve(async (req) => {
                     // No venue found for this owner
                     return new Response(JSON.stringify({ error: "No venue profile found for this account. Please create one first." }), {
                         status: 404,
-                        headers: { ...corsHeaders, "Content-Type": "application/json" },
+                        headers: { ...headers, "Content-Type": "application/json" },
                     });
                 }
                 throw updateError;
             }
 
             return new Response(JSON.stringify({ venue: updated }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
@@ -294,7 +302,7 @@ serve(async (req) => {
 
         return new Response(JSON.stringify({ error: message }), {
             status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            headers: { ...headers, "Content-Type": "application/json" },
         });
     }
 });

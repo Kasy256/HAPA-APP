@@ -2,10 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.21.0";
 import { z } from "https://deno.land/x/zod@v3.21.4/mod.ts";
 
-const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-sub-path",
-};
+import { corsHeaders } from "../_shared/cors.ts";
 
 const PostCreateSchema = z.object({
     media_type: z.enum(["image", "video"]),
@@ -14,7 +11,10 @@ const PostCreateSchema = z.object({
 });
 
 serve(async (req) => {
-    if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+    const origin = req.headers.get("Origin");
+    const headers = corsHeaders(origin);
+
+    if (req.method === "OPTIONS") return new Response("ok", { headers });
 
     try {
         const authHeader = req.headers.get("Authorization") || `Bearer ${Deno.env.get("SUPABASE_ANON_KEY")}`;
@@ -34,8 +34,12 @@ serve(async (req) => {
 
         // --- AUTHENTICATION HELPERS ---
         const token = authHeader.replace('Bearer ', '');
-        const { data: { user } } = await supabaseClient.auth.getUser(token);
-        const userId = user?.id;
+        // We use a safe check here. If it's the anon key, we don't even try to get a user.
+        let userId: string | undefined;
+        if (token && token !== Deno.env.get("SUPABASE_ANON_KEY")) {
+            const { data } = await supabaseClient.auth.getUser(token);
+            userId = data.user?.id;
+        }
 
         // --- ROUTE: GET /venue/:id (Fetch posts for a venue) ---
         if (req.method === "GET" && pathParts.length === 2 && pathParts[0] === "venue") {
@@ -45,7 +49,7 @@ serve(async (req) => {
                 .from("posts")
                 .select("*")
                 .eq("venue_id", venueId)
-                .is("is_deleted", false) // Just in case some soft-deleted ones remain
+                .is("is_deleted", false)
                 .gt("expires_at", new Date().toISOString())
                 .order("created_at", { ascending: false })
                 .limit(100);
@@ -66,7 +70,7 @@ serve(async (req) => {
             }
 
             return new Response(JSON.stringify({ posts: posts || [] }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
@@ -105,14 +109,32 @@ serve(async (req) => {
 
             const { venues, ...postRest } = post;
             return new Response(JSON.stringify({ post: postRest, venue: venuePayload }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
+            });
+        }
+
+        // --- ROUTE: POST /:id/view (Track View) ---
+        // Moved above auth check to allow anonymous view counts
+        if (req.method === "POST" && pathParts.length === 2 && pathParts[1] === "view") {
+            const postId = pathParts[0];
+            try {
+                await supabaseAdmin.rpc("track_post_view", {
+                    target_post_id: postId,
+                    viewer_user_id: userId || null
+                });
+            } catch (e) {
+                console.error("Error tracking view:", e);
+            }
+
+            return new Response(JSON.stringify({ success: true }), {
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
         // --- AUTHENTICATED ROUTES BELOW ---
         if (!userId) {
             if (req.method !== "OPTIONS") {
-                return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: corsHeaders });
+                return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers });
             }
         }
 
@@ -129,6 +151,15 @@ serve(async (req) => {
                 .single();
 
             if (venueError || !venue) throw new Error("No venue found for this owner");
+
+            // --- POST LIMIT CHECK ---
+            const { data: limit } = await supabaseAdmin.rpc("check_post_limit", { p_venue_id: venue.id });
+            if (limit && !limit.can_post && !limit.is_unlimited) {
+                return new Response(JSON.stringify({
+                    error: "Post limit reached",
+                    details: "Free venues are limited to 3 vibes per day. Upgrade to Pro for unlimited posts."
+                }), { status: 403, headers });
+            }
 
             const expires_at = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
@@ -149,31 +180,28 @@ serve(async (req) => {
 
             return new Response(JSON.stringify({ post }), {
                 status: 201,
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-        }
-
-        // --- ROUTE: POST /:id/view (Track View) ---
-        if (req.method === "POST" && pathParts.length === 2 && pathParts[1] === "view") {
-            const postId = pathParts[0];
-            // Flask parity: fire and forget/swallow error for view tracking
-            try {
-                await supabaseAdmin.rpc("track_post_view", {
-                    target_post_id: postId,
-                    viewer_user_id: userId
-                });
-            } catch (e) {
-                console.error("Error tracking view:", e);
-            }
-
-            return new Response(JSON.stringify({ success: true }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
         // --- ROUTE: POST /:id/like (Toggle Like) ---
         if (req.method === "POST" && pathParts.length === 2 && pathParts[1] === "like") {
             const postId = pathParts[0];
+
+            // Ensure the user exists in public.users before inserting the like.
+            // Anonymous/browse-only users don't go through OTP, so they have a valid
+            // auth.users session but NO row in public.users, causing a FK violation.
+            // public.users columns: id, phone_number (nullable), role, status, created_at, last_login_at
+            const { error: upsertErr } = await supabaseAdmin.from("users").upsert({
+                id: userId,
+                role: "user",
+                status: "active",
+            }, { onConflict: "id", ignoreDuplicates: true });
+
+            if (upsertErr) {
+                console.warn("[posts/like] Could not upsert user into public.users:", upsertErr.message);
+            }
+
             const { data: metrics, error: likeError } = await supabaseAdmin.rpc("toggle_post_like", {
                 target_post_id: postId,
                 target_user_id: userId
@@ -182,7 +210,7 @@ serve(async (req) => {
             if (likeError) throw likeError;
 
             return new Response(JSON.stringify({ metrics: metrics || { likes: 0, views: 0 } }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
@@ -198,7 +226,7 @@ serve(async (req) => {
                 .single();
 
             if (!postCheck || postCheck.venues.owner_id !== userId) {
-                return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: corsHeaders });
+                return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403, headers });
             }
 
             // Hard delete via USER JWT so RLS enforces at the DB level
@@ -209,7 +237,7 @@ serve(async (req) => {
 
             if (error) throw error;
             return new Response(JSON.stringify({ success: true }), {
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
+                headers: { ...headers, "Content-Type": "application/json" },
             });
         }
 
@@ -218,7 +246,7 @@ serve(async (req) => {
     } catch (error: any) {
         return new Response(JSON.stringify({ error: error.message }), {
             status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            headers: { ...headers, "Content-Type": "application/json" },
         });
     }
 });

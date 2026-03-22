@@ -93,6 +93,7 @@ const PATH_MAP: Record<string, string> = {
   '/api/auth': 'auth',
   '/api/discover': 'discovery',
   '/api/locations/suggest': 'google-maps',
+  '/api/payments': 'payments',
   '/api/posts': 'posts',
   '/api/venues': 'venues',
 };
@@ -124,23 +125,23 @@ export async function apiFetch(path: string, options: ApiOptions = {}) {
     sessionToken = session?.access_token || null;
   }
 
-  // Supabase gateway requires BOTH:
-  //   apikey        = anon key  (identifies the project)
-  //   Authorization = user JWT  (identifies the user, or anon key as fallback)
-  const authToken = sessionToken || SUPABASE_ANON_KEY;
+  // Supabase gateway requires apikey for project identification.
+  // Authorization header should only contain a USER JWT, not the anon key.
+  const headers: Record<string, string> = {
+    'apikey': SUPABASE_ANON_KEY,
+    'x-sub-path': relativePath || '/',
+    'Content-Type': 'application/json',
+  };
+
+  if (sessionToken) {
+    headers['Authorization'] = `Bearer ${sessionToken}`;
+  }
 
   console.log(`[Supabase API] Auth State:`, {
     hasSession: !!sessionToken,
     usingAnon: !sessionToken,
-    tokenPreview: authToken.substring(0, 20) + '...',
+    tokenPreview: sessionToken ? (sessionToken.substring(0, 10) + '...') : 'none',
   });
-
-  const headers: Record<string, string> = {
-    'apikey': SUPABASE_ANON_KEY,
-    'Authorization': `Bearer ${authToken}`,
-    'x-sub-path': relativePath || '/',
-    'Content-Type': 'application/json',
-  };
 
   const functionUrl = `${SUPABASE_URL}/functions/v1/${functionName}`;
 
@@ -160,6 +161,15 @@ export async function apiFetch(path: string, options: ApiOptions = {}) {
       url: functionUrl,
       body: errorBody,
     });
+
+    // Auto-logout on 401: stale token — clear stored credentials so the user
+    // is prompted to re-authenticate rather than getting cryptic error messages.
+    if (response.status === 401) {
+      console.warn('[Supabase API] 401 received — clearing auth tokens and signing out.');
+      await clearAuthTokens();
+      await supabase.auth.signOut();
+    }
+
     throw new Error(
       errorBody?.error || errorBody?.message || `HTTP ${response.status}: ${response.statusText}`
     );

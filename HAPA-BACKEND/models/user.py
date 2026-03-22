@@ -4,12 +4,20 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 
 
+import re
+
 def normalize_phone(phone: str) -> str:
-    """Very basic phone normalization. In production, use a proper library like `phonenumbers`."""
+    """Normalize and strictly validate phone number to E.164 format (+256XXXXXXXXX or +254XXXXXXXXX)."""
     phone = phone.strip()
     if phone.startswith("0"):
         # Example heuristic for UG numbers: replace leading 0 with +256
-        return "+256" + phone[1:]
+        phone = "+256" + phone[1:]
+    
+    # Strict E.164 validation (specifically for East Africa as per prompt, or general E.164)
+    # The prompt specified: (+256XXXXXXXXX, +254XXXXXXXXX)
+    if not re.match(r"^\+(256|254)\d{9}$", phone):
+         raise ValueError(f"Invalid phone number format. Must be E.164 format (+256XXXXXXXXX or +254XXXXXXXXX). Got: {phone}")
+    
     return phone
 
 

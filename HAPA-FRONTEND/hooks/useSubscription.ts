@@ -1,5 +1,4 @@
-// HAPA-FRONTEND/hooks/useSubscription.ts
-// Central subscription hook — use everywhere you need tier/post-limit data.
+// Central subscription hook for tier and post-limit data
 
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '@/lib/api';
@@ -68,7 +67,7 @@ export function useSubscription(): SubscriptionState {
   return { ...state, refresh: fetchSubscription };
 }
 
-// ── Tier helpers ───────────────────────────────────────────────────────────────
+// Tier helpers
 
 export function isPro(tier: SubscriptionTier): boolean {
   return tier === 'pro' || tier === 'elite';

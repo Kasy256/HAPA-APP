@@ -3,24 +3,17 @@ import { Colors } from '@/constants/Colors';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { Tabs } from 'expo-router';
-import React from 'react';
+import React, { useEffect } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import * as Linking from 'expo-linking';
 import Animated, { useAnimatedStyle, withSpring } from 'react-native-reanimated';
+import { useSubscription } from '@/hooks/useSubscription';
 
 function CustomTabBar({ state, descriptors, navigation }: any) {
-  const TAB_WIDTH = 280; // Total width of the floating pill
+  const TAB_WIDTH = 280;
   const TAB_ITEM_WIDTH = TAB_WIDTH / 3;
-
-  // Determine target translateX based on active index
-  // 0: Home, 1: Create, 2: Profile
   const activeIndex = state.index;
 
-  // We can use a standard useEffect or just render based on index if we want simple spring
-  // But for reanimated shared value, we need to pass it in.
-  // For simplicity in this functional component, we can use the index directly with layout animation or simple conditional
-  // Let's rely on standard reanimated styles driven by state
-
-  // Check if the current tab wants to hide the bar
   const { options: currentOptions } = descriptors[state.routes[activeIndex].key];
   if (currentOptions.tabBarStyle?.display === 'none') {
     return null;
@@ -102,14 +95,29 @@ function CustomTabBar({ state, descriptors, navigation }: any) {
 }
 
 export default function VenueLayout() {
+  const { refresh } = useSubscription();
+
+  useEffect(() => {
+    const handleDeepLink = ({ url }: { url: string }) => {
+      if (url.includes('payment=success')) {
+        refresh();
+      }
+    };
+
+    const sub = Linking.addEventListener('url', handleDeepLink);
+    Linking.getInitialURL().then(url => {
+      if (url) handleDeepLink({ url });
+    });
+
+    return () => sub.remove();
+  }, [refresh]);
+
   return (
     <Tabs
       tabBar={(props) => <CustomTabBar {...props} />}
       screenOptions={{
         headerShown: false,
-        tabBarStyle: {
-          position: 'absolute', // We are overriding this, but good to keep safe
-        }
+        tabBarStyle: { position: 'absolute' }
       }}
     >
       <Tabs.Screen name="index" />

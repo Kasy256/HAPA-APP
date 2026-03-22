@@ -6,12 +6,15 @@ import { apiFetch, clearAuthTokens } from '@/lib/api';
 import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View, Linking, Platform } from 'react-native';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { MediaPreview } from '@/components/MediaPreview';
 import { SkeletonBox, SkeletonCircle } from '@/components/Skeleton';
+import { useSubscription, getTierColor, getTierLabel } from '@/hooks/useSubscription';
+import { VerifiedBadge } from '@/components/VerifiedBadge';
+import { openManage } from '@/lib/openSubscription';
 
 type Venue = {
     id: string;
@@ -32,6 +35,8 @@ export default function VenueProfileScreen() {
     const [venue, setVenue] = useState<Venue | null>(null);
     const [posts, setPosts] = useState<Post[]>([]);
     const [loading, setLoading] = useState(true);
+    const [cancelling, setCancelling] = useState(false);
+    const subscription = useSubscription();
 
     useEffect(() => {
         const loadProfile = async () => {
@@ -55,28 +60,18 @@ export default function VenueProfileScreen() {
 
     const handleSignOut = async () => {
         try {
-            console.log('[Logout] Initiating full sign out...');
-
-            // 1. Clear Supabase session
-            const { error: signOutError } = await supabase.auth.signOut();
-            if (signOutError) console.warn('[Logout] Supabase signOut warning:', signOutError.message);
-
-            // 2. Clear custom auth tokens
+            // Perform full sign out
+            await supabase.auth.signOut();
             await clearAuthTokens();
+            await AsyncStorage.removeItem('hapa_active_role');
+            await new Promise(resolve => setTimeout(resolve, 50)); // Ensure AsyncStorage writes commit
 
-            // 3. Remove launch preference — must complete before navigation
-            await AsyncStorage.removeItem('hapa_launch_preference');
-
-            // 4. Small flush to ensure AsyncStorage writes commit
-            await new Promise(resolve => setTimeout(resolve, 50));
-
-            console.log('[Logout] Cleared. Navigating to start...');
             router.replace('/');
 
         } catch (err) {
             console.error('[Logout] Critical failure:', err);
             // Attempt cleanup even on failure
-            await AsyncStorage.removeItem('hapa_launch_preference').catch(() => {});
+            await AsyncStorage.removeItem('hapa_active_role').catch(() => {});
             router.replace('/');
         }
     };
@@ -99,7 +94,7 @@ export default function VenueProfileScreen() {
                             // Clear everything before navigating
                             await supabase.auth.signOut();
                             await clearAuthTokens();
-                            await AsyncStorage.removeItem('hapa_launch_preference');
+                            await AsyncStorage.removeItem('hapa_active_role');
                             await new Promise(resolve => setTimeout(resolve, 50));
 
                             router.replace('/');
@@ -113,28 +108,58 @@ export default function VenueProfileScreen() {
         );
     };
 
-    // NOTE: We intentionally do NOT track a view here.
-    // This is the owner's own profile tab — self-views are excluded
-    // from analytics, just like Instagram and TikTok do.
+    const handleCancelPlan = () => {
+        if (!venue) return;
+        Alert.alert(
+            'Manage Subscription',
+            `To cancel or change your plan, please visit our secure web dashboard.`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                { 
+                    text: 'Go to Dashboard', 
+                    onPress: () => openManage({
+                        venueId: venue.id,
+                        venueName: venue.name,
+                    })
+                },
+            ]
+        );
+    };
+
+     const handleSwitchToDiscover = async () => {
+        try {
+            await AsyncStorage.setItem('hapa_active_role', 'discover');
+            router.replace('/discover');
+        } catch (e) {
+            console.error('Failed to switch mode:', e);
+        }
+    };
 
     if (!venue && !loading) {
         return (
             <ScreenWrapper>
-                {/* Header Actions still visible here */}
-                <View style={styles.headerActions}>
+                <View style={[styles.headerActions, { flexDirection: 'row', gap: 10, alignItems: 'center' }]}>
+                    <TouchableOpacity
+                        style={styles.pillButton}
+                        activeOpacity={0.7}
+                        onPress={handleSwitchToDiscover}
+                    >
+                        <Ionicons name="eye-outline" size={18} color="white" />
+                        <Text style={styles.pillButtonText}>Discover</Text>
+                    </TouchableOpacity>
                     <TouchableOpacity
                         style={styles.iconButton}
                         activeOpacity={0.7}
                         onPress={handleSignOut}
                     >
-                        <Ionicons name="log-out-outline" size={24} color="white" />
+                        <Ionicons name="log-out-outline" size={20} color="white" />
                     </TouchableOpacity>
                     <TouchableOpacity
-                        style={[styles.iconButton, { marginTop: 12, backgroundColor: 'rgba(255,59,48,0.1)' }]}
+                        style={[styles.iconButton, { backgroundColor: 'rgba(255,59,48,0.1)' }]}
                         activeOpacity={0.7}
                         onPress={handleDeleteAccount}
                     >
-                        <Ionicons name="trash-outline" size={24} color="#FF3B30" />
+                        <Ionicons name="trash-outline" size={20} color="#FF3B30" />
                     </TouchableOpacity>
                 </View>
 
@@ -167,20 +192,28 @@ export default function VenueProfileScreen() {
                 )}
 
                 {/* Header Actions */}
-                <View style={styles.headerActions}>
+                <View style={[styles.headerActions, { flexDirection: 'row', gap: 10, alignItems: 'center' }]}>
+                    <TouchableOpacity
+                        style={styles.pillButton}
+                        activeOpacity={0.7}
+                        onPress={handleSwitchToDiscover}
+                    >
+                        <Ionicons name="eye-outline" size={18} color="white" />
+                        <Text style={styles.pillButtonText}>Discover</Text>
+                    </TouchableOpacity>
                     <TouchableOpacity
                         style={styles.iconButton}
                         activeOpacity={0.7}
                         onPress={handleSignOut}
                     >
-                        <Ionicons name="log-out-outline" size={24} color="white" />
+                        <Ionicons name="log-out-outline" size={20} color="white" />
                     </TouchableOpacity>
                     <TouchableOpacity
-                        style={[styles.iconButton, { marginTop: 12, backgroundColor: 'rgba(255,59,48,0.1)' }]}
+                        style={[styles.iconButton, { backgroundColor: 'rgba(255,59,48,0.1)' }]}
                         activeOpacity={0.7}
                         onPress={handleDeleteAccount}
                     >
-                        <Ionicons name="trash-outline" size={24} color="#FF3B30" />
+                        <Ionicons name="trash-outline" size={20} color="#FF3B30" />
                     </TouchableOpacity>
                 </View>
 
@@ -204,7 +237,10 @@ export default function VenueProfileScreen() {
                             </>
                         ) : (
                             <>
-                                <Text style={styles.name}>{venue?.name}</Text>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                    <Text style={styles.name} numberOfLines={1}>{venue?.name}</Text>
+                                    <VerifiedBadge tier={subscription.tier} size="md" />
+                                </View>
                                 <Text style={styles.category}>{venue?.type || 'Venue'}</Text>
                             </>
                         )}
@@ -230,6 +266,79 @@ export default function VenueProfileScreen() {
                     >
                         <Text style={styles.editButtonText}>Edit Profile</Text>
                     </TouchableOpacity>
+
+                    <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                        <TouchableOpacity
+                            style={[styles.editButton, { flex: 1, marginTop: 0 }]}
+                            onPress={() => Linking.openURL('https://get-hapa.web.app/Privacy.html')}
+                        >
+                            <Text style={styles.editButtonText}>Privacy Policy</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={[styles.editButton, { flex: 1, marginTop: 0 }]}
+                            onPress={() => Linking.openURL('https://get-hapa.web.app/Terms.html')}
+                        >
+                            <Text style={styles.editButtonText}>Terms of Use</Text>
+                        </TouchableOpacity>
+                    </View>
+
+                    {/* Plan & Billing */}
+                    {!subscription.loading && (
+                        <View style={styles.planCard}>
+                            <View style={styles.planCardHeader}>
+                                <View style={styles.planCardLeft}>
+                                    <View style={[styles.tierBadge, { backgroundColor: getTierColor(subscription.tier) + '22' }]}>
+                                        <Ionicons
+                                            name={subscription.tier === 'free' ? 'star-outline' : 'star'}
+                                            size={13}
+                                            color={getTierColor(subscription.tier)}
+                                        />
+                                        <Text style={[styles.tierBadgeText, { color: getTierColor(subscription.tier) }]}>
+                                            {getTierLabel(subscription.tier)}
+                                        </Text>
+                                    </View>
+                                    <Text style={styles.planCardTitle}>Plan & Billing</Text>
+                                </View>
+                                <Ionicons name="settings-outline" size={18} color="rgba(255,255,255,0.3)" />
+                            </View>
+
+                            {subscription.tier !== 'free' && subscription.currentPeriodEnd && (
+                                <Text style={styles.planRenewal}>
+                                    {subscription.cancelAtPeriodEnd
+                                        ? `⚠️ Cancels on ${new Date(subscription.currentPeriodEnd).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`
+                                        : `Renews ${new Date(subscription.currentPeriodEnd).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`
+                                    }
+                                </Text>
+                            )}
+
+                            <View style={styles.planActions}>
+                                <TouchableOpacity
+                                    style={styles.planUpgradeBtn}
+                                    onPress={() => router.push('/(venue)/subscription')}
+                                    activeOpacity={0.8}
+                                >
+                                    <Ionicons name="rocket-outline" size={15} color="white" />
+                                    <Text style={styles.planUpgradeBtnText}>
+                                        {subscription.tier === 'free' ? 'Upgrade Plan' : 'Change Plan'}
+                                    </Text>
+                                </TouchableOpacity>
+
+                                {subscription.tier !== 'free' && !subscription.cancelAtPeriodEnd && (
+                                    <TouchableOpacity
+                                        style={[styles.planCancelBtn, cancelling && { opacity: 0.5 }]}
+                                        onPress={handleCancelPlan}
+                                        disabled={cancelling}
+                                        activeOpacity={0.8}
+                                    >
+                                        <Text style={styles.planCancelBtnText}>
+                                            {cancelling ? 'Cancelling...' : 'Cancel Plan'}
+                                        </Text>
+                                    </TouchableOpacity>
+                                )}
+                            </View>
+                        </View>
+                    )}
 
                     <Text style={styles.sectionTitle}>Your Posts</Text>
 
@@ -295,6 +404,7 @@ const styles = StyleSheet.create({
         fontSize: 24,
         fontWeight: 'bold',
         color: Colors.text.primary,
+        flexShrink: 1,
     },
     category: {
         fontSize: 14, // Reduced from 16
@@ -391,4 +501,97 @@ const styles = StyleSheet.create({
         color: 'white',
         fontSize: 10,
     },
+    // Plan & Billing card
+    planCard: {
+        marginTop: 16,
+        backgroundColor: 'rgba(255,255,255,0.05)',
+        borderRadius: 16,
+        padding: 16,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+    },
+    planCardHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 4,
+    },
+    planCardLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+    },
+    planCardTitle: {
+        fontSize: 15,
+        fontWeight: '700',
+        color: Colors.text.primary,
+    },
+    tierBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 20,
+    },
+    tierBadgeText: {
+        fontSize: 12,
+        fontWeight: '700',
+    },
+    planRenewal: {
+        fontSize: 12,
+        color: 'rgba(255,255,255,0.4)',
+        marginTop: 6,
+        marginBottom: 14,
+        marginLeft: 2,
+    },
+    planActions: {
+        flexDirection: 'row',
+        gap: 10,
+        marginTop: 14,
+    },
+    planUpgradeBtn: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        backgroundColor: Colors.cta?.primary ?? '#BD3115',
+        paddingVertical: 11,
+        borderRadius: 10,
+    },
+    planUpgradeBtnText: {
+        color: 'white',
+        fontWeight: '700',
+        fontSize: 14,
+    },
+    planCancelBtn: {
+        paddingHorizontal: 16,
+        paddingVertical: 11,
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(255,59,48,0.4)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    planCancelBtnText: {
+        color: '#FF3B30',
+        fontWeight: '600',
+        fontSize: 13,
+    },
+    pillButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(0,0,0,0.4)',
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 20,
+        gap: 6,
+    },
+    pillButtonText: {
+        color: 'white',
+        fontSize: 13,
+        fontWeight: '700',
+    },
 });
+

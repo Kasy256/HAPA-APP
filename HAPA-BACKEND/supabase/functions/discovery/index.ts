@@ -59,6 +59,8 @@ serve(async (req) => {
             { global: { headers: { Authorization: authHeader } } }
         );
 
+        const now = new Date();
+
         // --- ADMIN CLIENT (Bypasses RLS) ---
         const supabaseAdmin = createClient(
             Deno.env.get("SUPABASE_URL") ?? "",
@@ -72,31 +74,59 @@ serve(async (req) => {
 
         // --- ROUTE: /feed ---
         if (path === "feed" || path === "discovery" || path === undefined) {
-            // Rate limit: max 30 feed requests per IP per minute
-            const rl = checkRateLimit(`discovery-feed:${clientIp}`, 30, 60_000);
-            if (!rl.allowed) {
+            // Postgres Rate limit: 60 per minute per IP
+            const { data: isAllowed } = await supabaseAdmin.rpc("check_rate_limit", {
+                p_ip: clientIp,
+                p_endpoint: 'discovery_feed',
+                p_max_reqs: 60,
+                p_window_seconds: 60
+            });
+
+            if (isAllowed === false) {
                 return new Response(JSON.stringify({ error: "Rate limit exceeded. Please slow down." }), {
                     status: 429,
-                    headers: { ...headers, "Content-Type": "application/json", ...rateLimitHeaders(rl.remaining, rl.retryAfterMs) },
+                    headers: { ...headers, "Content-Type": "application/json" },
                 });
             }
 
             const { lat, lng, city, radius_km } = FeedSchema.parse(params);
 
             // Priority 1: City filtering (for Discover Feed)
-            if (city) {
-                const { data: venues, error } = await supabaseAdmin
+            if (city && lat === undefined) {
+                const { data: rawData, error } = await supabaseAdmin
                     .from("venues")
-                    .select("*, posts(*)")
+                    .select("*, posts(*), venue_subscriptions(tier, status), post_boosts(starts_at, ends_at)")
                     .eq("is_deleted", false)
                     .eq("posts.is_deleted", false)
                     .ilike("city", `%${city}%`);
 
                 if (error) throw error;
 
-                const posts = (venues || []).flatMap((v: any) => v.posts || []).filter((p: any) => new Date(p.expires_at) > new Date());
+                const rawVenues = (rawData || []).map((v: any) => {
+                    const subs = v.venue_subscriptions;
+                    const activeSub = Array.isArray(subs) 
+                        ? subs.find((s: any) => s.status === 'active')
+                        : (subs?.status === 'active' ? subs : null);
+                    
+                    return {
+                        ...v,
+                        tier: activeSub?.tier || 'free',
+                        is_boosted: (v.post_boosts || []).some((b: any) => 
+                            new Date(b.starts_at) <= now && new Date(b.ends_at) > now
+                        )
+                    };
+                });
 
-                // Populate is_liked
+                // Sort by: Boosted > Elite > Pro > Free
+                const tierWeight: Record<string, number> = { elite: 1, pro: 2, free: 3 };
+                const venues = rawVenues.sort((a: any, b: any) => {
+                    if (a.is_boosted && !b.is_boosted) return -1;
+                    if (!a.is_boosted && b.is_boosted) return 1;
+                    return (tierWeight[a.tier] || 3) - (tierWeight[b.tier] || 3);
+                });
+
+                const posts = (venues || []).flatMap((v: any) => v.posts || []).filter((p: any) => new Date(p.expires_at) > now);
+
                 if (userId && posts.length > 0) {
                     const postIds = posts.map((p: any) => p.id);
                     const { data: likes } = await supabaseAdmin
@@ -124,17 +154,16 @@ serve(async (req) => {
 
                 if (rpcError) throw rpcError;
 
-                // The RPC already returns pre-ranked venues with their latest post info.
-                // We map it to the structure the frontend expects { venues, posts }.
                 const venues = (nearbyData || []).map((v: any) => ({
                     id: v.venue_id,
                     name: v.venue_name,
                     area: v.venue_area,
                     type: v.venue_type,
+                    categories: v.venue_categories,
                     images: v.venue_images,
                     location: v.venue_location,
-                    lat: v.venue_location?.coordinates?.[1],
-                    lng: v.venue_location?.coordinates?.[0],
+                    lat: v.venue_lat,
+                    lng: v.venue_lng,
                     dist_meters: v.dist_meters,
                     tier: v.tier,
                     is_boosted: v.is_boosted,
@@ -148,7 +177,6 @@ serve(async (req) => {
                     created_at: v.latest_post_created,
                 }));
 
-                // Populate is_liked
                 if (userId && posts.length > 0) {
                     const postIds = posts.map((p: any) => p.id);
                     const { data: likes } = await supabaseAdmin
@@ -166,27 +194,42 @@ serve(async (req) => {
                 });
             }
 
-            // Fallback & City: Use a ranked query to ensure paid tiers come first even without lat/lng
-            const cityQuery = city ? supabaseAdmin.from("venues").select("*, posts(*)").ilike("city", `%${city}%`) : supabaseAdmin.from("venues").select("*, posts(*)");
-            
-            const { data: rawVenues, error } = await cityQuery
+            // Fallback & City: Join with subscription/boost status
+            const cityQuery = supabaseAdmin
+                .from("venues")
+                .select("*, posts(*), venue_subscriptions(tier, status), post_boosts(starts_at, ends_at)")
                 .eq("is_deleted", false)
-                .eq("posts.is_deleted", false)
-                .limit(50);
+                .eq("posts.is_deleted", false);
 
+            if (city) cityQuery.ilike("city", `%${city}%`);
+            
+            const { data: rawData, error } = await cityQuery.limit(50);
             if (error) throw error;
 
-            // Sort by tier manually since PostgREST doesn't support complex case-based ordering easily
-            const tierWeight: Record<string, number> = { elite: 1, pro: 2, free: 3 };
-            const venues = (rawVenues || []).sort((a: any, b: any) => {
-                const tierA = a.tier || 'free';
-                const tierB = b.tier || 'free';
-                return (tierWeight[tierA] || 3) - (tierWeight[tierB] || 3);
+            const rawVenues = (rawData || []).map((v: any) => {
+                const subs = v.venue_subscriptions;
+                const activeSub = Array.isArray(subs) 
+                    ? subs.find((s: any) => s.status === 'active')
+                    : (subs?.status === 'active' ? subs : null);
+                
+                return {
+                    ...v,
+                    tier: activeSub?.tier || 'free',
+                    is_boosted: (v.post_boosts || []).some((b: any) => 
+                        new Date(b.starts_at) <= now && new Date(b.ends_at) > now
+                    )
+                };
             });
 
-            const posts = (venues || []).flatMap((v: any) => v.posts || []).filter((p: any) => new Date(p.expires_at) > new Date());
+            const tierWeight: Record<string, number> = { elite: 1, pro: 2, free: 3 };
+            const venues = rawVenues.sort((a: any, b: any) => {
+                if (a.is_boosted && !b.is_boosted) return -1;
+                if (!a.is_boosted && b.is_boosted) return 1;
+                return (tierWeight[a.tier] || 3) - (tierWeight[b.tier] || 3);
+            });
 
-            // Populate is_liked
+            const posts = (venues || []).flatMap((v: any) => v.posts || []).filter((p: any) => new Date(p.expires_at) > now);
+
             if (userId && posts.length > 0) {
                 const postIds = posts.map((p: any) => p.id);
                 const { data: likes } = await supabaseAdmin
@@ -206,12 +249,18 @@ serve(async (req) => {
 
         // --- ROUTE: /search ---
         if (path === "search") {
-            // Rate limit: max 20 search requests per IP per minute
-            const rl = checkRateLimit(`discovery-search:${clientIp}`, 20, 60_000);
-            if (!rl.allowed) {
+            // Postgres Rate limit: max 30 search requests per IP per minute (fixed to 30 as per requirements)
+            const { data: isAllowed } = await supabaseAdmin.rpc("check_rate_limit", {
+                p_ip: clientIp,
+                p_endpoint: 'discovery_search',
+                p_max_reqs: 30,
+                p_window_seconds: 60
+            });
+
+            if (isAllowed === false) {
                 return new Response(JSON.stringify({ error: "Rate limit exceeded. Please slow down." }), {
                     status: 429,
-                    headers: { ...headers, "Content-Type": "application/json", ...rateLimitHeaders(rl.remaining, rl.retryAfterMs) },
+                    headers: { ...headers, "Content-Type": "application/json" },
                 });
             }
 
@@ -222,16 +271,38 @@ serve(async (req) => {
             // we'll fetch results and then potentially sort if needed, OR just return them with lat/lng
             // The frontend already calculates distance for display.
 
-            let query = supabaseAdmin.from("venues").select("*").eq("is_deleted", false);
+            let query = supabaseAdmin
+                .from("venues")
+                .select("*, venue_subscriptions(tier, status), post_boosts(starts_at, ends_at)")
+                .eq("is_deleted", false);
 
             if (city) query = query.eq("city", city);
             if (area) query = query.eq("area", area);
             if (q) query = query.or(`name.ilike."%${q}%",type.ilike."%${q}%"`);
 
-            const { data, error } = await query.limit(50);
+            const { data: resultsRaw, error } = await query.limit(50);
             if (error) throw error;
 
-            let results = data || [];
+            // Flatten and Sort Search Results: Boosted > Elite > Pro > Free
+            const results = (resultsRaw || []).map((v: any) => {
+                const subs = v.venue_subscriptions;
+                const activeSub = Array.isArray(subs) 
+                    ? subs.find((s: any) => s.status === 'active')
+                    : (subs?.status === 'active' ? subs : null);
+                
+                return {
+                    ...v,
+                    tier: activeSub?.tier || 'free',
+                    is_boosted: (v.post_boosts || []).some((b: any) => 
+                        new Date(b.starts_at) <= now && new Date(b.ends_at) > now
+                    )
+                };
+            }).sort((a: any, b: any) => {
+                if (a.is_boosted && !b.is_boosted) return -1;
+                if (!a.is_boosted && b.is_boosted) return 1;
+                const tierWeight: Record<string, number> = { elite: 1, pro: 2, free: 3 };
+                return (tierWeight[a.tier] || 3) - (tierWeight[b.tier] || 3);
+            });
 
             // If coordinates are available, we COULD sort here, but let's keep it simple
             // and ensure the frontend has the data it needs to show distances.

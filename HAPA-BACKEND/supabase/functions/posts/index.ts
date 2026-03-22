@@ -4,10 +4,12 @@ import { z } from "https://deno.land/x/zod@v3.21.4/mod.ts";
 
 import { corsHeaders } from "../_shared/cors.ts";
 
+const stripHtml = (val: string) => val.replace(/<[^>]*>?/gm, '');
+
 const PostCreateSchema = z.object({
     media_type: z.enum(["image", "video"]),
     media_url: z.string().url(),
-    caption: z.string().max(280).optional(),
+    caption: z.string().max(280).transform(stripHtml).optional(),
 });
 
 serve(async (req) => {
@@ -44,17 +46,25 @@ serve(async (req) => {
         // --- ROUTE: GET /venue/:id (Fetch posts for a venue) ---
         if (req.method === "GET" && pathParts.length === 2 && pathParts[0] === "venue") {
             const venueId = pathParts[1];
+            const now = new Date();
 
-            const { data: posts, error: postsError } = await supabaseAdmin
+            const { data: rawPosts, error: postsError } = await supabaseAdmin
                 .from("posts")
-                .select("*")
+                .select("*, post_boosts(starts_at, ends_at)")
                 .eq("venue_id", venueId)
                 .is("is_deleted", false)
-                .gt("expires_at", new Date().toISOString())
+                .gt("expires_at", now.toISOString())
                 .order("created_at", { ascending: false })
                 .limit(100);
 
             if (postsError) throw postsError;
+
+            const posts = (rawPosts || []).map((p: any) => ({
+                ...p,
+                is_boosted: (p.post_boosts || []).some((b: any) => 
+                    new Date(b.starts_at) <= now && new Date(b.ends_at) > now
+                )
+            }));
 
             // Align with Flask: Populate is_liked if user is logged in
             if (userId && posts.length > 0) {

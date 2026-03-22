@@ -10,17 +10,26 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Dimensions, FlatList, Image, Linking, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import * as Location from 'expo-location';
+import Slider from '@react-native-community/slider';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { MediaPreview } from '@/components/MediaPreview';
 import { SkeletonBox } from '@/components/Skeleton';
-import { apiFetch, clearAuthTokens, getTransformedImageUrl, isVideoUrl } from '@/lib/api';
+import { VerifiedBadge } from '@/components/VerifiedBadge';
+import { apiFetch, clearAuthTokens, getTransformedImageUrl, isVideoUrl, isVenueOwner } from '@/lib/api';
 import { estimateTravelTime, getUserCityAndCoords, UserLocation, getLocationPermission } from '@/lib/location';
 import { openDirections } from '@/lib/directions';
 import { getTimeAgo } from '@/lib/time';
 
 const { width } = Dimensions.get('window');
+
+const DISTANCE_OPTIONS = [
+    { label: 'Walk', km: 2 },
+    { label: 'Drive', km: 10 },
+    { label: 'City', km: 25 },
+    { label: 'Metro', km: 50 }
+];
 
 // Bottom Bar Config
 const TAB_WIDTH = 240;
@@ -42,9 +51,25 @@ export default function DiscoverScreen() {
     const [refreshing, setRefreshing] = useState(false);
     const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
     const [loadingLocation, setLoadingLocation] = useState(true);
+    const [distanceFilter, setDistanceFilter] = useState(10);
     const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'undetermined'>('undetermined');
+    const [isOwner, setIsOwner] = useState(false);
+    const [showPromoCard, setShowPromoCard] = useState(false);
     const [showSuggestions, setShowSuggestions] = useState(false);
     const translateX = useSharedValue(0);
+
+    useEffect(() => {
+        const checkStatus = async () => {
+            const owner = await isVenueOwner();
+            setIsOwner(owner);
+            
+            if (!owner) {
+                const hidden = await AsyncStorage.getItem('hapa_hide_promotion_card');
+                if (!hidden) setShowPromoCard(true);
+            }
+        };
+        checkStatus();
+    }, []);
 
     const handleTabPress = useCallback((tab: 'home' | 'search') => {
         setActiveTab(tab);
@@ -57,15 +82,85 @@ export default function DiscoverScreen() {
 
     const handleSignOut = useCallback(async () => {
         await clearAuthTokens();
-        await AsyncStorage.removeItem('hapa_launch_preference');
+        await AsyncStorage.removeItem('hapa_active_role');
         router.replace('/');
     }, [router]);
+
+    const handleSwitchToManagement = async () => {
+        try {
+            await AsyncStorage.setItem('hapa_active_role', 'promote');
+            router.replace('/(venue)');
+        } catch (e) {
+            console.error('Failed to switch to management:', e);
+        }
+    };
+
+    const handleHidePromo = async () => {
+        try {
+            await AsyncStorage.setItem('hapa_hide_promotion_card', 'true');
+            setShowPromoCard(false);
+        } catch (e) {
+            console.error('Failed to hide promo:', e);
+        }
+    };
 
     const animatedStyle = useAnimatedStyle(() => {
         return {
             transform: [{ translateX: translateX.value }],
         };
     });
+
+    const handlePostOptions = (postId: string, venueId: string) => {
+        Alert.alert(
+            "Options",
+            "What would you like to do?",
+            [
+                { text: "Cancel", style: "cancel" },
+                { text: "Report Content", onPress: () => handleReport(postId, 'post') },
+                { text: "Block Venue", onPress: () => handleBlock(venueId), style: "destructive" }
+            ]
+        );
+    };
+
+    const handleReport = async (itemId: string, itemType: string) => {
+        try {
+            // Send report API call
+            await apiFetch('/api/reports', {
+                method: 'POST',
+                body: JSON.stringify({ item_id: itemId, item_type: itemType, reason: "Inappropriate content" })
+            });
+            Alert.alert("Reported", "Thank you for reporting. Our team will review this shortly.");
+        } catch (e: any) {
+            Alert.alert("Error", `Could not submit report: ${e.message}`);
+        }
+    };
+
+    const handleBlock = async (venueId: string) => {
+        try {
+            const blockedStr = await AsyncStorage.getItem('hapa_blocked_venues');
+            let blocked: string[] = [];
+            try {
+                blocked = blockedStr ? JSON.parse(blockedStr) : [];
+            } catch (e) {
+                console.warn('Failed to parse blocked venues, resetting:', e);
+                blocked = [];
+            }
+            
+            if (!blocked.includes(venueId)) {
+                blocked.push(venueId);
+                await AsyncStorage.setItem('hapa_blocked_venues', JSON.stringify(blocked));
+            }
+            // Filter out directly from state
+            setVenues((prev) => prev.filter(v => v.id !== venueId));
+            setRawPosts((prev) => prev.filter(p => p.venue_id !== venueId));
+            setNearbyVenues((prev) => prev.filter(v => v.id !== venueId));
+            setSearchResults((prev) => prev.filter(v => v.id !== venueId));
+            
+            Alert.alert("Blocked", "You will no longer see content from this venue.");
+        } catch (e) {
+            console.error(e);
+        }
+    };
 
     const loadFeed = useCallback(async (loc: UserLocation | null) => {
         try {
@@ -74,8 +169,17 @@ export default function DiscoverScreen() {
             // Discover Feed (Home) uses City filtering as per requirements
             const cityParam = loc?.city ? `?city=${encodeURIComponent(loc.city)}` : '';
             const data = await apiFetch(`/api/discover/feed${cityParam}`);
-            setVenues(data.venues || []);
-            setRawPosts(data.posts || []);
+            
+            const blockedStr = await AsyncStorage.getItem('hapa_blocked_venues');
+            let blocked: string[] = [];
+            try {
+                blocked = blockedStr ? JSON.parse(blockedStr) : [];
+            } catch (e) {
+                blocked = [];
+            }
+
+            setVenues((data.venues || []).filter((v:any) => !blocked.includes(v.id)));
+            setRawPosts((data.posts || []).filter((p:any) => !blocked.includes(p.venue_id)));
         } catch (e: any) {
             setFeedError(e?.message || 'Could not load vibes. Check your connection.');
             setVenues([]);
@@ -86,13 +190,22 @@ export default function DiscoverScreen() {
         }
     }, []);
 
-    const loadNearby = useCallback(async (loc: UserLocation) => {
+    const loadNearby = useCallback(async (loc: UserLocation, radiusKm: number) => {
         try {
             setLoadingNearby(true);
             // Search Tab "Near You" uses Coordinates
-            const params = `?lat=${encodeURIComponent(loc.latitude)}&lng=${encodeURIComponent(loc.longitude)}&radius_km=10`;
+            const params = `?lat=${encodeURIComponent(loc.latitude)}&lng=${encodeURIComponent(loc.longitude)}&radius_km=${radiusKm}`;
             const data = await apiFetch(`/api/discover/feed${params}`);
-            setNearbyVenues(data.venues || []);
+            
+            const blockedStr = await AsyncStorage.getItem('hapa_blocked_venues');
+            let blocked: string[] = [];
+            try {
+                blocked = blockedStr ? JSON.parse(blockedStr) : [];
+            } catch (e) {
+                blocked = [];
+            }
+            
+            setNearbyVenues((data.venues || []).filter((v:any) => !blocked.includes(v.id)));
         } catch (e) {
             console.error('Near You error:', e);
             setNearbyVenues([]);
@@ -100,6 +213,13 @@ export default function DiscoverScreen() {
             setLoadingNearby(false);
         }
     }, []);
+
+    const onDistanceChange = (km: number) => {
+        setDistanceFilter(km);
+        if (userLocation) {
+            loadNearby(userLocation, km);
+        }
+    };
 
     // Memoized: stories strip — computed only when venues or rawPosts change
     const stories = useMemo(() => {
@@ -120,6 +240,8 @@ export default function DiscoverScreen() {
                     active: true,
                     lat: v.lat,
                     lng: v.lng,
+                    is_boosted: v.is_boosted,
+                    tier: v.tier,
                 });
             }
         }
@@ -178,7 +300,7 @@ export default function DiscoverScreen() {
                     setUserLocation(loc);
                     await Promise.all([
                         loadFeed(loc),
-                        loadNearby(loc)
+                        loadNearby(loc, distanceFilter)
                     ]);
                 }
             } else if (!canAskAgain) {
@@ -210,7 +332,7 @@ export default function DiscoverScreen() {
                     setUserLocation(loc);
                     await Promise.all([
                         loadFeed(loc),
-                        loadNearby(loc)
+                        loadNearby(loc, distanceFilter)
                     ]);
                 } else {
                     await loadFeed(null);
@@ -262,7 +384,11 @@ export default function DiscoverScreen() {
             }
 
             const data = await apiFetch(`/api/discover/search?${params.toString()}`);
-            setSearchResults(data.venues || []);
+            
+            const blockedStr = await AsyncStorage.getItem('hapa_blocked_venues');
+            const blocked = blockedStr ? JSON.parse(blockedStr) : [];
+            
+            setSearchResults((data.venues || []).filter((v:any) => !blocked.includes(v.id)));
         } catch (e) {
             console.error('Search error:', e);
             setSearchResults([]);
@@ -363,14 +489,54 @@ export default function DiscoverScreen() {
                                     <Text style={styles.subHeaderText}>Top 5 Places Today</Text>
                                 </View>
                             </View>
-                            <TouchableOpacity
-                                style={styles.iconButton}
-                                activeOpacity={0.7}
-                                onPress={handleSignOut}
-                            >
-                                <Ionicons name="log-out-outline" size={24} color={Colors.text.primary} />
-                            </TouchableOpacity>
+
+                            <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+                                {isOwner && (
+                                    <TouchableOpacity
+                                        style={styles.pillButton}
+                                        activeOpacity={0.7}
+                                        onPress={handleSwitchToManagement}
+                                    >
+                                        <Ionicons name="business-outline" size={18} color={Colors.text.primary} />
+                                        <Text style={styles.pillButtonText}>Management</Text>
+                                    </TouchableOpacity>
+                                )}
+                                <TouchableOpacity
+                                    style={styles.iconButton}
+                                    activeOpacity={0.7}
+                                    onPress={handleSignOut}
+                                >
+                                    <Ionicons name="log-out-outline" size={24} color={Colors.text.primary} />
+                                </TouchableOpacity>
+                            </View>
                         </View>
+
+                        {/* Promotion Card for Anonymous Users */}
+                        {showPromoCard && (
+                            <View style={styles.promoCard}>
+                                <TouchableOpacity 
+                                    style={styles.promoClose} 
+                                    onPress={handleHidePromo}
+                                >
+                                    <Ionicons name="close" size={20} color="white" />
+                                </TouchableOpacity>
+                                <View style={styles.promoContent}>
+                                    <View style={styles.promoIconBox}>
+                                        <Ionicons name="megaphone-outline" size={24} color="white" />
+                                    </View>
+                                    <View style={{ flex: 1, marginLeft: 12 }}>
+                                        <Text style={styles.promoTitle}>Grow your business?</Text>
+                                        <Text style={styles.promoText}>Promote your venue or event to thousands of locals.</Text>
+                                    </View>
+                                </View>
+                                <TouchableOpacity 
+                                    style={styles.promoButton}
+                                    onPress={() => router.push('/venue-login')}
+                                >
+                                    <Text style={styles.promoButtonText}>Promote Now</Text>
+                                </TouchableOpacity>
+                            </View>
+                        )}
 
                         {/* Stories Ring - Fixed */}
                         <View style={styles.storiesContainer}>
@@ -402,7 +568,15 @@ export default function DiscoverScreen() {
                                                 )}
                                             </View>
                                         </LinearGradient>
-                                        <Text style={styles.storyName} numberOfLines={1}>{item.name}</Text>
+                                        {item.is_boosted && (
+                                            <View style={styles.boostedStoryBadge}>
+                                                <Text style={{ fontSize: 10 }}>🔥</Text>
+                                            </View>
+                                        )}
+                                        <View style={styles.storyNameRow}>
+                                            <Text style={styles.storyName} numberOfLines={1}>{item.name}</Text>
+                                            <VerifiedBadge tier={item.tier} size="sm" />
+                                        </View>
                                         <Text style={styles.distanceText}>
                                             {userLocation && item.lat && item.lng
                                                 ? estimateTravelTime(userLocation.latitude, userLocation.longitude, item.lat, item.lng)
@@ -471,11 +645,22 @@ export default function DiscoverScreen() {
                                 highlights.map(({ venue, post }) => (
                                     <TouchableOpacity
                                         key={post.id}
-                                        style={styles.venueCard}
+                                        style={[
+                                            styles.venueCard,
+                                            venue.is_boosted && styles.boostedCardGlow
+                                        ]}
                                         activeOpacity={0.95}
                                         onPress={() => router.push(`/venue/${venue.id}`)}
                                     >
                                         <MediaPreview uri={isVideoUrl(post.media_url) ? post.media_url : getTransformedImageUrl(post.media_url, 800)} style={styles.cardImage} />
+
+                                        {/* Options Button */}
+                                        <TouchableOpacity 
+                                            style={{position: 'absolute', top: 12, right: 12, padding: 8, zIndex: 10, backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 20}}
+                                            onPress={(e) => { e.stopPropagation(); handlePostOptions(post.id, venue.id); }}
+                                        >
+                                            <Ionicons name="ellipsis-horizontal" size={20} color="white" />
+                                        </TouchableOpacity>
 
                                         {/* Card Overlay Content */}
                                         <LinearGradient
@@ -487,16 +672,12 @@ export default function DiscoverScreen() {
 
                                         <View style={styles.cardContent}>
                                             <View style={styles.cardRow}>
-                                                <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                                                    <Text style={styles.venueName}>{venue.name}</Text>
+                                                <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                                    <Text style={styles.venueName} numberOfLines={1}>{venue.name}</Text>
+                                                    <VerifiedBadge tier={venue.tier} size="sm" />
                                                     {venue.is_boosted && (
                                                         <View style={styles.boostBadge}>
                                                             <Text style={styles.boostText}>🔥 Boosted</Text>
-                                                        </View>
-                                                    )}
-                                                    {venue.tier && venue.tier !== 'free' && (
-                                                        <View style={[styles.tierBadge, { backgroundColor: venue.tier === 'elite' ? '#FFD700' : '#BD3115' }]}>
-                                                            <Text style={styles.tierText}>{venue.tier === 'elite' ? 'Elite' : 'Pro'}</Text>
                                                         </View>
                                                     )}
                                                 </View>
@@ -586,9 +767,36 @@ export default function DiscoverScreen() {
                         contentContainerStyle={styles.contentContainer}
                         showsVerticalScrollIndicator={false}
                     >
-                        <Text style={[styles.sectionTitle, { marginLeft: 20, marginBottom: 16 }]}>
-                            {searchQuery.length > 0 ? "Search Results" : "Near You"}
-                        </Text>
+                        <View style={{ paddingHorizontal: 20, marginBottom: 16 }}>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <Text style={styles.sectionTitle}>
+                                    {searchQuery.length > 0 ? "Search Results" : "Near You"}
+                                </Text>
+                                {searchQuery.length === 0 && locationPermission === 'granted' && (
+                                    <Text style={styles.sliderValueText}>{distanceFilter} km</Text>
+                                )}
+                            </View>
+
+                            {searchQuery.length === 0 && locationPermission === 'granted' && (
+                                <View style={styles.sliderContainer}>
+                                    <View style={styles.sliderLabels}>
+                                        <Text style={styles.sliderLabelText}>Walk (2km)</Text>
+                                        <Text style={styles.sliderLabelText}>Metro (50km)</Text>
+                                    </View>
+                                    <Slider
+                                        style={{ width: '100%', height: 40 }}
+                                        minimumValue={2}
+                                        maximumValue={50}
+                                        step={1}
+                                        value={distanceFilter}
+                                        onSlidingComplete={onDistanceChange}
+                                        minimumTrackTintColor={Colors.cta.primary}
+                                        maximumTrackTintColor="rgba(255,255,255,0.2)"
+                                        thumbTintColor={Colors.cta.primary}
+                                    />
+                                </View>
+                            )}
+                        </View>
 
                         <View style={styles.feedContainer}>
                             {locationPermission !== 'granted' && searchQuery.length === 0 ? (
@@ -610,14 +818,42 @@ export default function DiscoverScreen() {
                                         No venues found for "{searchQuery}"
                                     </Text>
                                 </View>
+                            ) : searchQuery.length === 0 && nearbyVenues.length === 0 && !loadingNearby ? (
+                                <View style={styles.emptyStateContainer}>
+                                    <Ionicons name="compass-outline" size={48} color="rgba(255,255,255,0.4)" style={{ marginBottom: 12 }} />
+                                    <Text style={styles.emptyStateTitle}>No vibes found within {distanceFilter}km</Text>
+                                    <Text style={styles.emptyStateText}>Expand your search radius to discover more spots.</Text>
+                                    
+                                    {distanceFilter < 50 && (
+                                        <TouchableOpacity 
+                                            style={styles.expandSearchButton} 
+                                            onPress={() => onDistanceChange(Math.min(50, distanceFilter + 10))}
+                                        >
+                                            <Text style={styles.expandSearchButtonText}>
+                                                Expand Search to {Math.min(50, distanceFilter + 10)}km
+                                            </Text>
+                                        </TouchableOpacity>
+                                    )}
+                                </View>
                             ) : (
                                 (searchQuery.length > 0 ? searchResults : nearbyVenues).map((venue) => (
                                     <TouchableOpacity
                                         key={venue.id}
-                                        style={styles.searchCard}
+                                        style={[
+                                            styles.searchCard,
+                                            venue.is_boosted && styles.boostedSearchCardGlow
+                                        ]}
                                         activeOpacity={0.95}
                                         onPress={() => router.push(`/venue/${venue.id}`)}
                                     >
+                                        {/* Options Button */}
+                                        <TouchableOpacity 
+                                            style={{position: 'absolute', top: 8, right: 8, padding: 6, zIndex: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20}}
+                                            onPress={(e) => { e.stopPropagation(); handlePostOptions('venue', venue.id); }}
+                                        >
+                                            <Ionicons name="ellipsis-horizontal" size={16} color="white" />
+                                        </TouchableOpacity>
+
                                         {/* Top Image Section */}
                                         <View style={styles.searchCardImageWrapper}>
                                             <Image source={{ uri: getTransformedImageUrl(venue.images?.[0], 400) }} style={styles.searchCardImage} resizeMode="cover" />
@@ -629,12 +865,17 @@ export default function DiscoverScreen() {
                                         {/* Bottom Info Section */}
                                         <View style={styles.searchCardInfo}>
                                             <View style={styles.cardRow}>
-                                                <Text style={styles.searchCardName} numberOfLines={1}>{venue.name}</Text>
-                                                {userLocation && venue.lat && venue.lng && (
-                                                    <Text style={styles.searchCardDistance}>
-                                                        {estimateTravelTime(userLocation.latitude, userLocation.longitude, venue.lat, venue.lng)}
-                                                    </Text>
-                                                )}
+                                                <View style={{ flex: 1 }}>
+                                                    <Text style={styles.searchCardName} numberOfLines={1}>{venue.name}</Text>
+                                                </View>
+                                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                                    <VerifiedBadge tier={venue.tier} size="sm" />
+                                                    {userLocation && venue.lat && venue.lng && (
+                                                        <Text style={styles.searchCardDistance}>
+                                                            {estimateTravelTime(userLocation.latitude, userLocation.longitude, venue.lat, venue.lng)}
+                                                        </Text>
+                                                    )}
+                                                </View>
                                             </View>
                                             <Text style={styles.searchCardTagline} numberOfLines={1}>
                                                 {venue.categories?.length > 0 ? venue.categories.join(' • ') : venue.type}
@@ -783,10 +1024,17 @@ const styles = StyleSheet.create({
     },
     storyName: {
         color: Colors.text.primary,
-        fontSize: 12,
-        marginTop: 6,
+        fontSize: 11,
         fontWeight: '600',
-        textAlign: 'center',
+        flexShrink: 1,
+    },
+    storyNameRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2,
+        maxWidth: 75,
+        justifyContent: 'center',
+        marginTop: 6,
     },
     distanceText: {
         color: Colors.text.secondary,
@@ -813,6 +1061,30 @@ const styles = StyleSheet.create({
         borderRadius: 16, // iOS Card radius
         overflow: 'hidden',
         height: 380,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.05)',
+    },
+    boostedCardGlow: {
+        borderColor: '#FFD700',
+        borderWidth: 2,
+    },
+    boostedSearchCardGlow: {
+        borderColor: '#FFD700',
+        borderWidth: 1.5,
+    },
+    boostedStoryBadge: {
+        position: 'absolute',
+        top: 0,
+        right: 0,
+        backgroundColor: '#1A1A1A',
+        width: 18,
+        height: 18,
+        borderRadius: 9,
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: '#FFD700',
+        zIndex: 10,
     },
     cardImage: {
         width: '100%',
@@ -871,6 +1143,7 @@ const styles = StyleSheet.create({
         textShadowColor: 'rgba(0,0,0,0.5)',
         textShadowOffset: { width: 0, height: 2 },
         textShadowRadius: 4,
+        flexShrink: 1,
     },
     gateOverlay: {
         flex: 1,
@@ -1037,6 +1310,66 @@ const styles = StyleSheet.create({
         fontSize: 16,
         letterSpacing: 0.5,
     },
+    // DISTANCE SLIDER
+    sliderContainer: {
+        marginTop: 8,
+        backgroundColor: 'rgba(255,255,255,0.03)',
+        padding: 12,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.05)',
+    },
+    sliderLabels: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        paddingHorizontal: 10,
+        marginBottom: -5,
+    },
+    sliderLabelText: {
+        color: 'rgba(255,255,255,0.5)',
+        fontSize: 11,
+        fontWeight: '600',
+    },
+    sliderValueText: {
+        color: Colors.cta.primary,
+        fontSize: 14,
+        fontWeight: 'bold',
+    },
+    emptyStateContainer: {
+        padding: 30,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(255,255,255,0.03)',
+        borderRadius: 16,
+        marginHorizontal: 20,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.05)',
+        marginTop: 10,
+    },
+    emptyStateTitle: {
+        color: 'white',
+        fontSize: 16,
+        fontWeight: 'bold',
+        marginBottom: 6,
+        textAlign: 'center',
+    },
+    emptyStateText: {
+        color: 'rgba(255,255,255,0.6)',
+        fontSize: 14,
+        textAlign: 'center',
+        marginBottom: 20,
+    },
+    expandSearchButton: {
+        backgroundColor: Colors.cta.primary,
+        paddingHorizontal: 20,
+        paddingVertical: 10,
+        borderRadius: 24,
+    },
+    expandSearchButtonText: {
+        color: 'white',
+        fontWeight: 'bold',
+        fontSize: 14,
+    },
     // SEARCH STYLES
     searchHeaderContainer: {
         paddingHorizontal: 16,
@@ -1162,7 +1495,7 @@ const styles = StyleSheet.create({
         fontSize: 18,
         fontWeight: 'bold',
         color: 'white',
-        flex: 1,
+        flexShrink: 1,
         marginRight: 8,
     },
     searchCardDistance: {
@@ -1174,5 +1507,71 @@ const styles = StyleSheet.create({
         color: 'rgba(255,255,255,0.6)',
         fontSize: 13,
         marginTop: 4,
+    },
+    pillButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(255,255,255,0.12)',
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 20,
+        gap: 6,
+    },
+    pillButtonText: {
+        color: 'white',
+        fontSize: 13,
+        fontWeight: '700',
+    },
+    promoCard: {
+        backgroundColor: '#1C1C1C',
+        marginHorizontal: 16,
+        marginTop: 10,
+        marginBottom: 16,
+        borderRadius: 16,
+        padding: 16,
+        borderWidth: 1,
+        borderColor: 'rgba(189,49,21,0.3)',
+        position: 'relative',
+    },
+    promoClose: {
+        position: 'absolute',
+        top: 12,
+        right: 12,
+        padding: 4,
+        zIndex: 10,
+    },
+    promoContent: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: 16,
+    },
+    promoIconBox: {
+        width: 44,
+        height: 44,
+        borderRadius: 12,
+        backgroundColor: 'rgba(189,49,21,0.2)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    promoTitle: {
+        color: 'white',
+        fontSize: 16,
+        fontWeight: 'bold',
+    },
+    promoText: {
+        color: 'rgba(255,255,255,0.6)',
+        fontSize: 13,
+        marginTop: 2,
+    },
+    promoButton: {
+        backgroundColor: Colors.cta.primary,
+        paddingVertical: 12,
+        borderRadius: 12,
+        alignItems: 'center',
+    },
+    promoButtonText: {
+        color: 'white',
+        fontWeight: 'bold',
+        fontSize: 15,
     },
 });

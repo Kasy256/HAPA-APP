@@ -55,6 +55,7 @@ serve(async (req) => {
                 });
             }
 
+
             const code = Math.floor(10000 + Math.random() * 90000).toString();
             const expires_at = new Date(Date.now() + 10 * 60000).toISOString(); // 10 mins
 
@@ -72,13 +73,13 @@ serve(async (req) => {
             // Send via Africa's Talking
             const atUsername = Deno.env.get("AFRICASTALKING_USERNAME");
             const atApiKey = Deno.env.get("AFRICASTALKING_API_KEY");
-            
+
             if (atUsername && atApiKey) {
                 const isSandbox = atUsername === 'sandbox';
-                const atUrl = isSandbox 
-                    ? "https://api.sandbox.africastalking.com/version1/messaging" 
+                const atUrl = isSandbox
+                    ? "https://api.sandbox.africastalking.com/version1/messaging"
                     : "https://api.africastalking.com/version1/messaging";
-                
+
                 // Africa's Talking strictly requires the '+' prefix for international numbers (e.g. Kenya)
                 let atPhoneNumber = phone_number.trim();
                 if (!atPhoneNumber.startsWith('+')) {
@@ -101,7 +102,7 @@ serve(async (req) => {
                         },
                         body: bodyMsg.toString()
                     });
-                    
+
                     if (!smsRes.ok) {
                         const errText = await smsRes.text();
                         console.error("[Deno OTP] Africa's Talking Error:", errText);
@@ -136,6 +137,7 @@ serve(async (req) => {
                     headers: { ...headers, "Content-Type": "application/json", ...rateLimitHeaders(rl.remaining, rl.retryAfterMs) },
                 });
             }
+
 
             // Step 1: Fetch the latest non-expired OTP for this phone (regardless of code)
             const { data: otpRows, error: otpError } = await supabaseAdmin
@@ -183,6 +185,9 @@ serve(async (req) => {
                 });
             }
 
+            // Delete the used OTP row — keeps the table clean and prevents re-use
+            await supabaseAdmin.from("otp_codes").delete().eq("id", otpRecord.id);
+
             // Logic to link with Supabase Auth...
             // Use email-based dummy auth to avoid phone E.164 format issues
             // Normalize: remove non-digits AND handle leading zero after country code
@@ -208,43 +213,43 @@ serve(async (req) => {
             let authUserId = pubUserByPhone?.id;
 
             if (authUserId) {
-                 // User exists in public.users, ensures their Auth password is correct
-                 await supabaseAdmin.auth.admin.updateUserById(authUserId, {
-                     password: securePassword
-                 });
+                // User exists in public.users, ensures their Auth password is correct
+                await supabaseAdmin.auth.admin.updateUserById(authUserId, {
+                    password: securePassword
+                });
             } else {
-                 // No user in public.users, but they might still exist in Supabase Auth (e.g. database was cleared)
-                 // We can't use getUserByEmail, so we try to create them first.
-                 const { data: newUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
-                     email: dummyEmail,
-                     password: securePassword,
-                     email_confirm: true,
-                 });
+                // No user in public.users, but they might still exist in Supabase Auth (e.g. database was cleared)
+                // We can't use getUserByEmail, so we try to create them first.
+                const { data: newUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
+                    email: dummyEmail,
+                    password: securePassword,
+                    email_confirm: true,
+                });
 
-                 if (createError) {
-                      // If it fails because they already exist in auth, let's try to sign in with the old dummy password to find their ID
-                      const { data: oldAuthData } = await supabaseAdmin.auth.signInWithPassword({
-                          email: dummyEmail,
-                          password: dummyPassword,
-                      });
-                      
-                      if (oldAuthData?.user?.id) {
-                          authUserId = oldAuthData.user.id;
-                          await supabaseAdmin.auth.admin.updateUserById(authUserId, {
-                              password: securePassword
-                          });
-                      } else {
-                          // Try signing in with the securePassword in case we already migrated them
-                          const { data: currentAuthData } = await supabaseAdmin.auth.signInWithPassword({
-                              email: dummyEmail,
-                              password: securePassword,
-                          });
-                          if (!currentAuthData?.user?.id) {
-                               console.error("Could not create/lookup auth user:", createError.message);
-                               return new Response(JSON.stringify({ error: "Failed to create user account: " + createError.message }), { status: 500, headers });
-                          }
-                      }
-                 }
+                if (createError) {
+                    // If it fails because they already exist in auth, let's try to sign in with the old dummy password to find their ID
+                    const { data: oldAuthData } = await supabaseAdmin.auth.signInWithPassword({
+                        email: dummyEmail,
+                        password: dummyPassword,
+                    });
+
+                    if (oldAuthData?.user?.id) {
+                        authUserId = oldAuthData.user.id;
+                        await supabaseAdmin.auth.admin.updateUserById(authUserId, {
+                            password: securePassword
+                        });
+                    } else {
+                        // Try signing in with the securePassword in case we already migrated them
+                        const { data: currentAuthData } = await supabaseAdmin.auth.signInWithPassword({
+                            email: dummyEmail,
+                            password: securePassword,
+                        });
+                        if (!currentAuthData?.user?.id) {
+                            console.error("Could not create/lookup auth user:", createError.message);
+                            return new Response(JSON.stringify({ error: "Failed to create user account: " + createError.message }), { status: 500, headers });
+                        }
+                    }
+                }
             }
 
             // 3. Now sign in the user
@@ -272,9 +277,9 @@ serve(async (req) => {
 
                 if (upsertError) {
                     console.error("[Deno Auth] Critical: Could not upsert user into public.users:", upsertError.message);
-                    return new Response(JSON.stringify({ 
+                    return new Response(JSON.stringify({
                         error: "Profile synchronization failed.",
-                        details: `${upsertError.message} (ID: ${user.id})` 
+                        details: `${upsertError.message} (ID: ${user.id})`
                     }), { status: 500, headers });
                 }
             }

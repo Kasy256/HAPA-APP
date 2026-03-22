@@ -96,13 +96,14 @@ const PATH_MAP: Record<string, string> = {
   '/api/payments': 'payments',
   '/api/posts': 'posts',
   '/api/venues': 'venues',
+  '/api/reports': 'reports',
 };
 
 export async function apiFetch(path: string, options: ApiOptions = {}) {
   const method = options.method || (options.body ? 'POST' : 'GET');
   console.log(`[Supabase API] Invoking: ${method} ${path}`);
 
-  // 1. Determine which Edge Function to call
+  // Determine which Edge Function to call
   const matchedKey = Object.keys(PATH_MAP).find(key => path.startsWith(key));
   const functionName = matchedKey ? PATH_MAP[matchedKey] : null;
 
@@ -110,12 +111,10 @@ export async function apiFetch(path: string, options: ApiOptions = {}) {
     throw new Error(`No Edge Function mapped for path: ${path}`);
   }
 
-  // 2. Derive the internal sub-path (everything after the matched prefix)
+  // Sub-path: everything after the matched prefix
   const relativePath = path.replace(matchedKey!, '');
 
-  // 3. Get auth token
-  // First, explicitly check our SecureStore token since we save it there explicitly upon login
-  // and it avoids AsyncStorage initialization lag times.
+  // Auth token retrieval
   const storedToken = await getAccessToken();
 
   let sessionToken = storedToken;
@@ -145,11 +144,17 @@ export async function apiFetch(path: string, options: ApiOptions = {}) {
 
   const functionUrl = `${SUPABASE_URL}/functions/v1/${functionName}`;
 
-  const response = await fetch(functionUrl, {
-    method,
-    headers,
-    body: options.body,
-  });
+  let response;
+  try {
+    response = await fetch(functionUrl, {
+      method,
+      headers,
+      body: options.body,
+    });
+  } catch (netErr: any) {
+    console.error(`[Supabase API] Network failure invoking ${functionName}:`, netErr);
+    throw new Error('Network request failed. Please check your internet connection and try again.');
+  }
 
   if (!response.ok) {
     let errorBody: any = {};

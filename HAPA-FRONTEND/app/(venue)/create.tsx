@@ -213,9 +213,6 @@ export default function CreatePostScreen() {
 
                 {/* Bottom Edit Button */}
                 <View style={styles.bottomPreviewControls}>
-                    <TouchableOpacity style={styles.editButton}>
-                        <Text style={styles.editButtonText}>Edit</Text>
-                    </TouchableOpacity>
                 </View>
             </View>
         );
@@ -324,19 +321,6 @@ const styles = StyleSheet.create({
         right: 0,
         alignItems: 'center',
         zIndex: 10,
-    },
-    editButton: {
-        borderWidth: 2,
-        borderColor: Colors.cta.primary,
-        borderRadius: 12, // iOS standard radius
-        paddingHorizontal: 32,
-        paddingVertical: 12,
-        backgroundColor: 'rgba(0,0,0,0.5)',
-    },
-    editButtonText: {
-        color: 'white',
-        fontWeight: 'bold',
-        fontSize: 17, // iOS body size
     },
     bottomControlsOverlay: {
         position: 'absolute',

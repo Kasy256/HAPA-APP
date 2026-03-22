@@ -9,6 +9,7 @@ import { Dimensions, FlatList, Image, ScrollView, StyleSheet, Text, TouchableOpa
 
 import { MediaPreview } from '@/components/MediaPreview';
 import { SkeletonBox, SkeletonCircle } from '@/components/Skeleton';
+import { VerifiedBadge } from '@/components/VerifiedBadge';
 import { apiFetch, getTransformedImageUrl, isVideoUrl } from '@/lib/api';
 import { getTimeAgo } from '@/lib/time';
 import { openDirections } from '@/lib/directions';
@@ -139,8 +140,15 @@ export default function PublicVenueProfileScreen() {
                                     </>
                                 ) : (
                                     <>
-                                        <Text style={styles.venueName} numberOfLines={1}>{venue?.name ?? 'Venue'}</Text>
-
+                                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                            <Text style={styles.venueName} numberOfLines={1}>{venue?.name ?? 'Venue'}</Text>
+                                            <VerifiedBadge tier={venue?.tier} size="md" />
+                                        </View>
+                                        {venue?.tier && venue.tier !== 'free' && (
+                                            <Text style={styles.verifiedCaption}>
+                                                ✓ HAPA Verified Venue
+                                            </Text>
+                                        )}
                                     </>
                                 )}
 
@@ -204,11 +212,15 @@ export default function PublicVenueProfileScreen() {
                             posts.map(p => (
                                 <TouchableOpacity
                                     key={p.id}
-                                    style={styles.postCard}
+                                    style={[
+                                        styles.postCard,
+                                        p.is_boosted && styles.boostedPostHighlight
+                                    ]}
                                     activeOpacity={0.9}
                                     onPress={() => router.push(`/story/${p.id}`)}
                                 >
                                     <MediaPreview uri={isVideoUrl(p.media_url) ? p.media_url : getTransformedImageUrl(p.media_url, 400)} style={styles.postImage} />
+
                                     <LinearGradient
                                         colors={['transparent', 'rgba(0,0,0,0.8)']}
                                         style={styles.postGradient}
@@ -305,6 +317,7 @@ const styles = StyleSheet.create({
         fontSize: 24,
         fontWeight: 'bold',
         color: Colors.text.primary,
+        flexShrink: 1,
     },
     category: {
         color: Colors.text.secondary,
@@ -316,6 +329,13 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         marginTop: 6,
         gap: 6,
+    },
+    verifiedCaption: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: '#1D9BF0',
+        letterSpacing: 0.5,
+        marginTop: 2,
     },
     statusDot: {
         width: 8,
@@ -394,6 +414,34 @@ const styles = StyleSheet.create({
         left: 0,
         right: 0,
         height: '50%',
+    },
+    postBoostBadge: {
+        position: 'absolute',
+        top: 10,
+        right: 10,
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        padding: 4,
+        borderRadius: 12,
+    },
+    boostedPostHighlight: {
+        borderColor: '#FFD700',
+        borderWidth: 2,
+        shadowColor: '#FFD700',
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.5,
+        shadowRadius: 10,
+        elevation: 5,
+    },
+    boostBadge: {
+        backgroundColor: '#FFD700',
+        paddingHorizontal: 8,
+        paddingVertical: 2,
+        borderRadius: 10,
+    },
+    boostText: {
+        color: '#000',
+        fontSize: 10,
+        fontWeight: 'bold',
     },
     postContent: {
         position: 'absolute',

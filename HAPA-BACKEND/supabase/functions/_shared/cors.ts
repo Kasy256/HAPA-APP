@@ -1,7 +1,7 @@
 export const ALLOWED_ORIGINS = [
-    // Expo / Mobile App custom scheme
     "hapapp://",
-    "exp://",    // Expo Go development
+    "exp://",
+    "https://get-hapa.web.app",
 ];
 
 export const ALLOWED_METHODS = "GET, POST, PUT, DELETE, OPTIONS";
@@ -9,14 +9,12 @@ export const ALLOWED_HEADERS = "authorization, x-client-info, apikey, content-ty
 
 export function corsHeaders(requestOrigin: string | null): Record<string, string> {
     const isAllowed = requestOrigin && (
-        ALLOWED_ORIGINS.includes(requestOrigin) || 
-        // Allow mobile apps which may send origin like capacitor://localhost or http://localhost (Android emulator)
-        requestOrigin.startsWith("http://localhost:") || 
-        requestOrigin.startsWith("http://192.168.") // Local LAN development
+        ALLOWED_ORIGINS.includes(requestOrigin) ||
+        requestOrigin.startsWith("http://localhost:") ||
+        requestOrigin.startsWith("http://192.168.")
     );
 
-    // If an Origin header was sent and it's allowed, echo it. Else fallback to the primary domain.
-    // (If not allowed, the browser will block the response because it won't match the requester's origin).
+    // Echo the request origin if allowed; otherwise fall back to primary domain
     const originToEcho = isAllowed ? requestOrigin : "https://hapapp.co";
 
     return {

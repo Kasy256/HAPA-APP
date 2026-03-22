@@ -87,6 +87,8 @@ export default function VenueLoginScreen() {
                         onPress={handleSendOTP}
                         activeOpacity={0.8}
                         disabled={loading}
+                        accessibilityLabel="Send OTP"
+                        accessibilityRole="button"
                     >
                         <Text style={styles.buttonText}>{loading ? 'Sending...' : 'Send OTP'}</Text>
                     </TouchableOpacity>

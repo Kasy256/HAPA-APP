@@ -1,17 +1,21 @@
 import logging
 import os
 import random
-
+import secrets
 import requests
 
 logger = logging.getLogger(__name__)
 
 
 def generate_otp_code(length: int = 5) -> str:
-    """Generate a numeric OTP code."""
-    min_val = 10 ** (length - 1)
-    max_val = (10 ** length) - 1
-    return str(random.randint(min_val, max_val))
+    """Generate a numeric OTP code using secrets for cryptographic randomness."""
+    digits = "0123456789"
+    # Ensure the first digit is not 0 to maintain length when parsed as int, or just use strings.
+    # Since it's a string, leading zeros are fine, but random.randint avoided them.
+    # Let's completely replace it:
+    first_digit = secrets.choice("123456789")
+    rest = "".join(secrets.choice(digits) for _ in range(length - 1))
+    return first_digit + rest
 
 
 def _send_otp_via_log(phone_number: str, code: str) -> None:

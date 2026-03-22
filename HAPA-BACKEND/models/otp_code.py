@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 
-def create_otp(phone_number: str, code: str, purpose: str = "login", ttl_minutes: int = 5) -> Dict[str, Any]:
+def create_otp(phone_number: str, code: str, purpose: str = "login", ttl_minutes: int = 10) -> Dict[str, Any]:
     """
     Build a new OTP row for insertion into Supabase.
     We let Supabase generate the primary key.

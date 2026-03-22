@@ -1,40 +1,28 @@
-// Supabase Edge Function: payments
-// Routes (via x-sub-path header, matching all other HAPA edge functions):
-//   POST /initiate      — create Paystack transaction
-//   POST /verify        — verify + activate after redirect
-//   POST /webhook       — Paystack HMAC webhook (no auth required)
-//   GET  /subscription  — current tier + post limits for the caller
-//   DELETE /subscription — mark cancel_at_period_end
-
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.21.0";
-
 import { corsHeaders } from "../_shared/cors.ts";
 
 const PAYSTACK_BASE = "https://api.paystack.co";
 const FRONTEND_URL = "hapapp://";
+// Paystack webhook IPs — keep in sync with their published list
+const PAYSTACK_IPS = ['52.31.139.75', '52.49.173.169', '52.214.14.220'];
+const FREE_BOOSTS_PER_DAY = 3;
 
-// ── Pricing (amounts in KES — matching user dashboard) ──────────────────────
+// Amounts in KES
 const PLANS: Record<string, number> = {
-  pro: 3250,  // KES 3,250 (~$25)
-  elite: 9750,  // KES 9,750 (~$75)
+  pro: 3250,
+  elite: 9750,
 };
 
 const BOOST_PRICE: Record<string, number> = {
-  "24h": 1300,  // KES 1,300 (~$10)
-  "48h": 2340,  // KES 2,340 (~$18)
+  "24h": 1300,
+  "48h": 2340,
 };
 
-
-
-// ── Paystack helpers ───────────────────────────────────────────────────────────
 async function paystackPost(path: string, body: unknown, secret: string) {
   const res = await fetch(`${PAYSTACK_BASE}${path}`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${secret}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   const data = await res.json();
@@ -70,7 +58,6 @@ async function verifyWebhookSignature(
   return hex === signature;
 }
 
-// ── Activation helpers ─────────────────────────────────────────────────────────
 async function activateSubscription(
   admin: ReturnType<typeof createClient>,
   venueId: string,
@@ -81,9 +68,8 @@ async function activateSubscription(
   const now = new Date();
   const periodEnd = new Date(now.getTime() + 31 * 24 * 60 * 60 * 1000);
 
-  console.log(`[Subscription] Activating ${tier} for venue ${venueId}. Codes: ${customerCode}, ${subscriptionCode}`);
+  console.log(`[payments] activateSubscription tier=${tier} venue=${venueId}`);
 
-  // 1. First try to update the existing record
   const { data: updated, error: updateError } = await admin
     .from("venue_subscriptions")
     .update({
@@ -100,13 +86,12 @@ async function activateSubscription(
     .select();
 
   if (updateError) {
-    console.error(`[Subscription] DB Update error:`, updateError);
+    console.error(`[payments] subscription update error:`, updateError);
     throw updateError;
   }
 
-  // 2. If no record was updated (unlikely due to trigger), then insert
+  // Upsert: insert if no existing row (should rarely happen given DB trigger)
   if (!updated || updated.length === 0) {
-    console.log(`[Subscription] No existing record for ${venueId}, inserting...`);
     const { error: insertError } = await admin
       .from("venue_subscriptions")
       .insert({
@@ -119,13 +104,10 @@ async function activateSubscription(
         paystack_subscription_code: subscriptionCode || null,
         cancel_at_period_end: false,
       });
-
     if (insertError) {
-      console.error(`[Subscription] DB Insert error:`, insertError);
+      console.error(`[payments] subscription insert error:`, insertError);
       throw insertError;
     }
-  } else {
-    console.log(`[Subscription] Successfully updated tier to ${tier} for ${venueId}. Result:`, updated[0]);
   }
 }
 
@@ -149,7 +131,6 @@ async function activateBoost(
   });
 }
 
-// ── JSON response helper ───────────────────────────────────────────────────────
 function json(data: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -157,7 +138,6 @@ function json(data: unknown, status = 200, headers: Record<string, string> = {})
   });
 }
 
-// ── Main handler ───────────────────────────────────────────────────────────────
 serve(async (req) => {
   const origin = req.headers.get("Origin");
   const headers = corsHeaders(origin);
@@ -178,18 +158,16 @@ serve(async (req) => {
   const admin = createClient(SUPABASE_URL, SERVICE_KEY);
 
   const subPath = req.headers.get("x-sub-path") ?? "/";
-  const pathParts = subPath.split("?")[0].split("/").filter(Boolean);
-  const route = pathParts[0] ?? "";
+  const route = subPath.split("?")[0].split("/").filter(Boolean)[0] ?? "";
 
   try {
-    // ── GET /subscription ─────────────────────────────────────────────────────
     if (req.method === "GET" && route === "subscription") {
       if (isAnon) return json({ error: "Unauthorized: No session token" }, 401, headers);
 
       const token = authHeader!.replace("Bearer ", "");
       const { data: { user }, error: authError } = await supabaseClient.auth.getUser(token);
       if (authError || !user) {
-        console.error("Auth error:", authError);
+        console.error("[payments] auth error:", authError);
         return json({ error: "Unauthorized", details: authError?.message }, 401, headers);
       }
 
@@ -204,11 +182,26 @@ serve(async (req) => {
         .rpc("check_post_limit", { p_venue_id: venue.id });
       const limit = limitData ?? {};
 
+      const isElite = sub?.tier === 'elite';
+      let freeBoostsUsedToday = 0;
+      if (isElite) {
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const { count } = await admin
+          .from("post_boosts")
+          .select("id", { count: 'exact', head: true })
+          .eq("venue_id", venue.id)
+          .eq("is_free", true)
+          .gte("starts_at", todayStart.toISOString());
+        freeBoostsUsedToday = count ?? 0;
+      }
+
       if (!sub) {
         return json({
           tier: "free", status: "active",
           can_post: true, posts_today: 0, post_limit: 3,
           is_unlimited: false, current_period_end: null, cancel_at_period_end: false,
+          free_boosts_used_today: 0, free_boosts_remaining: 0,
         }, 200, headers);
       }
 
@@ -221,10 +214,11 @@ serve(async (req) => {
         post_limit: limit.limit ?? 3,
         can_post: limit.can_post ?? true,
         is_unlimited: limit.is_unlimited ?? false,
+        free_boosts_used_today: freeBoostsUsedToday,
+        free_boosts_remaining: isElite ? Math.max(0, FREE_BOOSTS_PER_DAY - freeBoostsUsedToday) : 0,
       }, 200, headers);
     }
 
-    // ── DELETE /subscription ──────────────────────────────────────────────────
     if (req.method === "DELETE" && route === "subscription") {
       if (isAnon) return json({ error: "Unauthorized: No session token" }, 401, headers);
 
@@ -244,8 +238,14 @@ serve(async (req) => {
       return json({ message: "Subscription will cancel at end of billing period." }, 200, headers);
     }
 
-    // ── POST /webhook — No JWT, HMAC verified ─────────────────────────────────
+    // Webhook — no JWT, verified via Paystack HMAC-SHA512
     if (req.method === "POST" && route === "webhook") {
+      const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+      if (!clientIp || !PAYSTACK_IPS.includes(clientIp)) {
+        console.warn(`[payments] webhook rejected — unknown IP: ${clientIp}`);
+        return json({ error: "Unauthorized IP" }, 403, headers);
+      }
+
       const signature = req.headers.get("x-paystack-signature") ?? "";
       const payload = await req.arrayBuffer();
       const valid = await verifyWebhookSignature(
@@ -257,12 +257,11 @@ serve(async (req) => {
       const eventType = event.event ?? "";
       const data = event.data ?? {};
 
-      console.log(`[Webhook] Received ${eventType} with reference: ${data.reference}`);
+      console.log(`[payments] webhook ${eventType} ref=${data.reference}`);
 
       if (eventType === "charge.success") {
         const reference = data.reference ?? "";
         if (reference) {
-          // 1. Find the transaction first (don't update yet, we need the current status)
           const { data: tx } = await admin
             .from("payment_transactions")
             .select("*")
@@ -270,49 +269,43 @@ serve(async (req) => {
             .single();
 
           if (!tx) {
-            console.error(`[Webhook] No transaction found for reference: ${reference}`);
+            console.error(`[payments] no transaction for ref: ${reference}`);
             return json({ error: "Transaction not found" }, 404, headers);
           }
 
-          // 2. Atomic update only if pending (to avoid multiple activations)
+          // Guard against double-activation from webhook + /verify race
           if (tx.status === "pending") {
             const { error: updateError } = await admin
               .from("payment_transactions")
               .update({ status: "success", updated_at: new Date().toISOString() })
               .eq("id", tx.id);
-
             if (updateError) {
-              console.error(`[Webhook] Failed to update transaction status:`, updateError);
+              console.error(`[payments] tx status update error:`, updateError);
             }
           }
 
-          // 3. Validate Amount & Currency
           const expectedAmountMinor = Number(tx.amount_local) * 100;
           const paidAmount = data.amount ?? 0;
           const paidCurrency = data.currency ?? "";
 
           if (paidCurrency !== tx.currency && tx.currency === 'KES' && paidCurrency !== 'USD') {
-            console.error(`[Webhook] Invalid Payment Currency for ${reference}. Expected: ${tx.currency}, Got: ${paidCurrency}`);
+            console.error(`[payments] currency mismatch ref=${reference} expected=${tx.currency} got=${paidCurrency}`);
             await admin.from("payment_transactions").update({ status: "failed" }).eq("id", tx.id);
             return json({ error: "Invalid payment currency" }, 400, headers);
           }
 
           if (paidAmount < expectedAmountMinor * 0.95) {
-            console.error(`[Webhook] Invalid Payment Amount for ${reference}. Expected: ${expectedAmountMinor}, Got: ${paidAmount}`);
+            console.error(`[payments] amount mismatch ref=${reference} expected=${expectedAmountMinor} got=${paidAmount}`);
             await admin.from("payment_transactions").update({ status: "failed" }).eq("id", tx.id);
             return json({ error: "Invalid payment amount" }, 400, headers);
           }
 
-          // 4. Activate! (Idempotent call)
           if (tx.type === "subscription") {
             const customerCode = data.customer?.customer_code || data.customer_code;
             const subCode = data.subscription_code || data.subscription?.subscription_code || data.subscription;
-
-            console.log(`[Webhook] Activating subscription. Reference: ${reference}, SubCode: ${typeof subCode === 'string' ? subCode : 'complex'}`);
             await activateSubscription(admin, tx.venue_id, tx.tier, customerCode, typeof subCode === 'string' ? subCode : undefined);
           } else if (tx.type === "boost") {
             const meta = tx.metadata ?? {};
-            console.log(`[Webhook] Activating boost. Reference: ${reference}, Venue: ${tx.venue_id}`);
             await activateBoost(admin, tx.venue_id, tx.id, meta.post_id, meta.duration ?? "24h");
           }
         }
@@ -327,13 +320,13 @@ serve(async (req) => {
       return json({ status: "ok" }, 200, headers);
     }
 
-    // ── Authenticated routes below ─────────────────────────────────────────────
+    // All routes below require a valid session
     if (isAnon) return json({ error: "Unauthorized: No session token" }, 401, headers);
 
     const token = authHeader!.replace("Bearer ", "");
     const { data: { user }, error: authError } = await supabaseClient.auth.getUser(token);
     if (authError || !user) {
-      console.error("Auth error in authenticated section:", authError);
+      console.error("[payments] auth error:", authError);
       return json({ error: "Unauthorized", details: authError?.message }, 401, headers);
     }
 
@@ -342,8 +335,20 @@ serve(async (req) => {
     if (!venue) return json({ error: "Venue not found" }, 404, headers);
     const venueId = venue.id;
 
-    // ── POST /initiate ─────────────────────────────────────────────────────────
     if (req.method === "POST" && route === "initiate") {
+      const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+
+      const { data: isAllowed, error: rlError } = await admin.rpc("check_rate_limit", {
+        p_ip: clientIp,
+        p_endpoint: `payments_initiate_${venueId}`,
+        p_max_reqs: 10,
+        p_window_seconds: 3600
+      });
+
+      if (!rlError && isAllowed === false) {
+        return json({ error: "Too many payment attempts. Please try again later." }, 429, headers);
+      }
+
       const body = await req.json().catch(() => ({}));
       const { type, email, tier, duration, post_id } = body;
 
@@ -351,15 +356,27 @@ serve(async (req) => {
       if (!["subscription", "boost"].includes(type))
         return json({ error: "Invalid payment type" }, 400, headers);
 
-      const currency = "KES"; // Paystack plans are in KES
+      const currency = "KES";
       const refSuffix = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
       const reference = `hapa_${type}_${venueId.slice(0, 8)}_${refSuffix}`;
 
-      const amount = type === "subscription"
-        ? PLANS[tier]
-        : BOOST_PRICE[duration];
+      let amount = 0;
+      if (type === "subscription") {
+        amount = PLANS[tier];
+      } else {
+        // Pro subscribers get a ~30% discount on boosts
+        const { data: sub } = await admin
+          .from("venue_subscriptions")
+          .select("tier")
+          .eq("venue_id", venueId)
+          .eq("status", "active")
+          .maybeSingle();
+        const basePrice = BOOST_PRICE[duration] || 0;
+        const isSubscriber = sub && (sub.tier === 'pro' || sub.tier === 'elite');
+        amount = isSubscriber ? Math.round(basePrice * 0.7) : basePrice;
+      }
 
-      if (!amount) return json({ error: "Invalid tier or duration" }, 400, headers);
+      if (!amount || amount <= 0) return json({ error: "Invalid tier or duration" }, 400, headers);
 
       const metadata: Record<string, string> = {
         venue_id: venueId, payment_type: type, currency,
@@ -367,7 +384,6 @@ serve(async (req) => {
       if (type === "subscription") metadata.tier = tier;
       if (type === "boost") { metadata.duration = duration; if (post_id) metadata.post_id = post_id; }
 
-      // Save pending transaction
       await admin.from("payment_transactions").insert({
         venue_id: venueId,
         type,
@@ -379,23 +395,23 @@ serve(async (req) => {
         metadata,
       });
 
-      // Get plan code from env if it exists (for subscriptions)
       let plan = undefined;
       if (type === "subscription") {
-        const envKey = `PAYSTACK_PLAN_${tier.toUpperCase()}`;
-        plan = Deno.env.get(envKey);
+        plan = Deno.env.get(`PAYSTACK_PLAN_${tier.toUpperCase()}`);
       }
 
       const paystackData = await paystackPost(
         "/transaction/initialize",
         {
           email,
-          amount: amount * 100, // Paystack expects minor units (cents/kobo/etc) even for KES/UGX in some API versions, but for KES/UGX specifically it varies. Best practice is * 100.
+          amount: amount * 100,
           currency,
           reference,
-          plan, // include the PLN_xxx code here
+          plan,
           metadata,
-          callback_url: `${FRONTEND_URL}/payment/callback?ref=${reference}`,
+          callback_url: origin && origin.includes("get-hapa.web.app")
+            ? `${origin}/dashboard?reference=${reference}`
+            : `${FRONTEND_URL}/payment/callback?ref=${reference}`,
         },
         PAYSTACK_SECRET
       );
@@ -407,7 +423,67 @@ serve(async (req) => {
       }, 200, headers);
     }
 
-    // ── POST /verify ───────────────────────────────────────────────────────────
+    // Elite members get 3 free boosts per day — no Paystack required
+    if (req.method === "POST" && route === "free-boost") {
+      const { data: sub } = await admin
+        .from("venue_subscriptions")
+        .select("tier, status")
+        .eq("venue_id", venueId)
+        .eq("status", "active")
+        .single();
+
+      if (!sub || sub.tier !== "elite") {
+        return json({ error: "Free boosts are only available for Elite subscribers." }, 403, headers);
+      }
+
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const { count: usedToday } = await admin
+        .from("post_boosts")
+        .select("id", { count: "exact", head: true })
+        .eq("venue_id", venueId)
+        .eq("is_free", true)
+        .gte("starts_at", todayStart.toISOString());
+
+      if ((usedToday ?? 0) >= FREE_BOOSTS_PER_DAY) {
+        return json({
+          error: `You have used all ${FREE_BOOSTS_PER_DAY} free boosts for today. They reset at midnight.`,
+        }, 429, headers);
+      }
+
+      const body = await req.json().catch(() => ({}));
+      const { duration, post_id } = body;
+      const validDuration = ["24h", "48h"].includes(duration) ? duration : "24h";
+
+      const now = new Date();
+      const hours = validDuration === "48h" ? 48 : 24;
+      const endsAt = new Date(now.getTime() + hours * 60 * 60 * 1000);
+
+      const { error: insertErr } = await admin.from("post_boosts").insert({
+        venue_id: venueId,
+        post_id: post_id ?? null,
+        transaction_id: null,
+        is_free: true,
+        duration_hours: hours,
+        starts_at: now.toISOString(),
+        ends_at: endsAt.toISOString(),
+      });
+
+      if (insertErr) {
+        console.error("[payments] free-boost insert error:", insertErr);
+        return json({ error: "Failed to activate boost. Please try again." }, 500, headers);
+      }
+
+      const remaining = FREE_BOOSTS_PER_DAY - (usedToday ?? 0) - 1;
+      return json({
+        status: "success",
+        type: "boost",
+        duration: validDuration,
+        free_boosts_remaining: remaining,
+        message: `Post boosted for ${validDuration}. ${remaining} free boost${remaining !== 1 ? 's' : ''} remaining today.`,
+      }, 200, headers);
+    }
+
     if (req.method === "POST" && route === "verify") {
       const { reference } = await req.json().catch(() => ({}));
       if (!reference) return json({ error: "Reference is required" }, 400, headers);
@@ -425,7 +501,6 @@ serve(async (req) => {
 
       const expectedAmountMinor = Number(tx.amount_local) * 100;
       const paidAmount = psTx.amount ?? 0;
-      const paidCurrency = psTx.currency ?? "";
 
       if (psTx.status !== "success" || paidAmount < expectedAmountMinor * 0.95) {
         if (tx.status === "pending") {
@@ -436,7 +511,6 @@ serve(async (req) => {
         return json({ error: "Payment was not successful or invalid amount", status: "failed" }, 402, headers);
       }
 
-      // atomic update
       if (tx.status === "pending") {
         await admin.from("payment_transactions")
           .update({
@@ -451,7 +525,6 @@ serve(async (req) => {
       const subCode = psTx.subscription?.subscription_code || psTx.subscription_code || psTx.subscription;
 
       if (tx.type === "subscription") {
-        console.log(`[/verify] Activating subscription. Reference: ${reference}, Tier: ${tx.tier}, SubCode: ${typeof subCode === 'string' ? subCode : 'complex'}`);
         await activateSubscription(admin, tx.venue_id, tx.tier, customerCode, typeof subCode === 'string' ? subCode : undefined);
         return json({
           status: "success", type: "subscription", tier: tx.tier,
@@ -461,7 +534,6 @@ serve(async (req) => {
 
       if (tx.type === "boost") {
         const meta = tx.metadata ?? {};
-        console.log(`[/verify] Activating boost. Reference: ${reference}`);
         await activateBoost(admin, tx.venue_id, tx.id, meta.post_id ?? null, meta.duration ?? "24h");
         return json({
           status: "success", type: "boost", duration: meta.duration,

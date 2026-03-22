@@ -16,9 +16,14 @@ from models.user import create_user, normalize_phone, user_to_dict
 from services.sms import generate_otp_code, send_otp
 from blueprints.auth import bp
 
+def get_phone_for_limiter():
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        return data.get("phone_number", request.remote_addr)
+    return request.remote_addr
 
 @bp.post("/request-otp")
-@limiter.limit("5 per minute")
+@limiter.limit("3 per 15 minute", key_func=get_phone_for_limiter)
 def request_otp():
     data = request.get_json() or {}
     phone = data.get("phone_number")
@@ -88,6 +93,9 @@ def verify_otp():
         if expires_at_dt and expires_at_dt < now:
             return jsonify({"error": "Invalid or expired code"}), 400
 
+    if otp_doc.get("attempts", 0) >= 5:
+        return jsonify({"error": "Code locked out due to too many attempts"}), 429
+
     # Increment attempts
     supabase.table("otp_codes").update(
         {"attempts": (otp_doc.get("attempts", 0) + 1)}
@@ -125,6 +133,9 @@ def verify_otp():
     refresh_token = create_refresh_token(identity=user_id, additional_claims=claims)
 
     user_payload = user_to_dict(user_doc)
+    
+    # Mark OTP as used by deleting it to ensure single-use
+    supabase.table("otp_codes").delete().eq("id", otp_doc["id"]).execute()
 
     return (
         jsonify(

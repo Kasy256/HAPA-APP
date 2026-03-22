@@ -59,8 +59,6 @@ export default {
             [
                 'expo-location',
                 {
-                    locationAlwaysAndWhenInUsePermission: 'HAPA needs your location to show venues and vibes near you.',
-                    locationAlwaysPermission: 'HAPA needs your location to show venues and vibes near you.',
                     locationWhenInUsePermission: 'HAPA needs your location to show venues and vibes near you.',
                 },
             ],

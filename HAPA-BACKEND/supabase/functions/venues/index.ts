@@ -6,39 +6,41 @@ import { corsHeaders } from "../_shared/cors.ts";
 
 // --- SCHEMAS ---
 
+const stripHtml = (val: string) => val.replace(/<[^>]*>?/gm, '');
+
 // Used for POST (create): all required NOT NULL fields must be present
 const VenueCreateSchema = z.object({
-    name: z.string().min(1, "Venue name is required"),
-    type: z.string().min(1, "Venue type is required"),
-    city: z.string().min(1, "City is required"),
-    area: z.string().min(1, "Area is required"),
-    address: z.string().optional(),
-    categories: z.array(z.string()).optional().default([]),
-    contact_phone: z.string().optional(),
+    name: z.string().min(1, "Venue name is required").max(100, "Venue name too long").transform(stripHtml),
+    type: z.string().min(1, "Venue type is required").transform(stripHtml),
+    city: z.string().min(1, "City is required").transform(stripHtml),
+    area: z.string().min(1, "Area is required").transform(stripHtml),
+    address: z.string().transform(stripHtml).optional(),
+    categories: z.array(z.string().transform(stripHtml)).optional().default([]),
+    contact_phone: z.string().transform(stripHtml).optional(),
     images: z.array(z.string()).optional().default([]),
     working_hours: z.any().optional(),
     lat: z.number().optional(),
     lng: z.number().optional(),
     place_id: z.string().optional(),
-    formatted_address: z.string().optional(),
+    formatted_address: z.string().transform(stripHtml).optional(),
     location_data: z.any().optional(),
 });
 
 // Used for PATCH (update): all fields optional, only provided fields are updated
 const VenueUpdateSchema = z.object({
-    name: z.string().min(1).optional(),
-    type: z.string().min(1).optional(),
-    city: z.string().min(1).optional(),
-    area: z.string().min(1).optional(),
-    address: z.string().optional(),
-    categories: z.array(z.string()).optional(),
-    contact_phone: z.string().optional(),
+    name: z.string().min(1).max(100).transform(stripHtml).optional(),
+    type: z.string().min(1).transform(stripHtml).optional(),
+    city: z.string().min(1).transform(stripHtml).optional(),
+    area: z.string().min(1).transform(stripHtml).optional(),
+    address: z.string().transform(stripHtml).optional(),
+    categories: z.array(z.string().transform(stripHtml)).optional(),
+    contact_phone: z.string().transform(stripHtml).optional(),
     images: z.array(z.string()).optional(),
     working_hours: z.any().optional(),
     lat: z.number().optional(),
     lng: z.number().optional(),
     place_id: z.string().optional(),
-    formatted_address: z.string().optional(),
+    formatted_address: z.string().transform(stripHtml).optional(),
     location_data: z.any().optional(),
 });
 
@@ -153,13 +155,29 @@ serve(async (req) => {
         // --- ROUTE: GET /:id (Fetch venue details) ---
         if (pathParts.length === 1 && pathParts[0] !== "me" && req.method === "GET") {
             const venueId = pathParts[0];
-            const { data: venue, error: venueError } = await supabaseAdmin
+            const now = new Date();
+            const { data: rawData, error: venueError } = await supabaseAdmin
                 .from("venues")
-                .select("*")
+                .select("*, venue_subscriptions(tier, status), post_boosts(starts_at, ends_at)")
                 .eq("id", venueId)
                 .single();
 
             if (venueError) throw venueError;
+
+            // Map tier and boosted status
+            const subs = rawData.venue_subscriptions;
+            const activeSub = Array.isArray(subs) 
+                ? subs.find((s: any) => s.status === 'active')
+                : (subs?.status === 'active' ? subs : null);
+            
+            const venue = {
+                ...rawData,
+                tier: activeSub?.tier || 'free',
+                is_boosted: (rawData.post_boosts || []).some((b: any) => 
+                    new Date(b.starts_at) <= now && new Date(b.ends_at) > now
+                )
+            };
+
             return new Response(JSON.stringify({ venue }), {
                 headers: { ...headers, "Content-Type": "application/json" },
             });

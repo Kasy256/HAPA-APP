@@ -103,7 +103,7 @@ export default function VenueHomeScreen() {
       await clearAuthTokens();
 
       // 3. Remove launch preference — must complete before navigation
-      await AsyncStorage.removeItem('hapa_launch_preference');
+      await AsyncStorage.removeItem('hapa_active_role');
 
       // 4. Small flush to ensure AsyncStorage commit
       await new Promise(resolve => setTimeout(resolve, 50));
@@ -112,8 +112,17 @@ export default function VenueHomeScreen() {
       router.replace('/');
     } catch (err) {
       console.error('[Logout] Critical failure:', err);
-      await AsyncStorage.removeItem('hapa_launch_preference').catch(() => {});
+      await AsyncStorage.removeItem('hapa_active_role').catch(() => {});
       router.replace('/');
+    }
+  };
+
+  const handleSwitchToDiscover = async () => {
+    try {
+      await AsyncStorage.setItem('hapa_active_role', 'discover');
+      router.replace('/discover');
+    } catch (e) {
+      console.error('Failed to switch mode:', e);
     }
   };
 
@@ -135,7 +144,7 @@ export default function VenueHomeScreen() {
               // Clear everything before navigating
               await supabase.auth.signOut();
               await clearAuthTokens();
-              await AsyncStorage.removeItem('hapa_launch_preference');
+              await AsyncStorage.removeItem('hapa_active_role');
               await new Promise(resolve => setTimeout(resolve, 50));
 
               router.replace('/');
@@ -187,20 +196,28 @@ export default function VenueHomeScreen() {
               <Text style={styles.venueName}>{venueName}</Text>
             )}
           </View>
-          <View style={{ flexDirection: 'row', gap: 12 }}>
+          <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+            <TouchableOpacity
+              style={styles.pillButton}
+              activeOpacity={0.7}
+              onPress={handleSwitchToDiscover}
+            >
+              <Ionicons name="eye-outline" size={18} color={Colors.text.primary} />
+              <Text style={styles.pillButtonText}>Discover</Text>
+            </TouchableOpacity>
             <TouchableOpacity
               style={styles.iconButton}
               activeOpacity={0.7}
               onPress={handleSignOut}
             >
-              <Ionicons name="log-out-outline" size={24} color={Colors.text.primary} />
+              <Ionicons name="log-out-outline" size={20} color={Colors.text.primary} />
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.iconButton, { backgroundColor: 'rgba(255,59,48,0.1)' }]}
               activeOpacity={0.7}
               onPress={handleDeleteAccount}
             >
-              <Ionicons name="trash-outline" size={24} color="#FF3B30" />
+              <Ionicons name="trash-outline" size={20} color="#FF3B30" />
             </TouchableOpacity>
           </View>
         </View>
@@ -612,5 +629,19 @@ const styles = StyleSheet.create({
   tipDesc: {
     color: 'rgba(255,255,255,0.9)',
     fontSize: 14,
+  },
+  pillButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    gap: 6,
+  },
+  pillButtonText: {
+    color: 'white',
+    fontSize: 13,
+    fontWeight: '700',
   },
 });

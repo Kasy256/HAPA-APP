@@ -8,6 +8,7 @@ import { ActivityIndicator, Dimensions, Image, StyleSheet, Text, TouchableOpacit
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { apiFetch, isVideoUrl } from '@/lib/api';
+import { VerifiedBadge } from '@/components/VerifiedBadge';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
@@ -261,7 +262,10 @@ export default function StoryScreen() {
                             <View style={[styles.avatar, { backgroundColor: 'rgba(255,255,255,0.2)' }]} />
                         )}
                         <View style={styles.headerText}>
-                            <Text style={styles.venueName}>{venue?.name || 'Venue'}</Text>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                <Text style={styles.venueName} numberOfLines={1}>{venue?.name || 'Venue'}</Text>
+                                <VerifiedBadge tier={venue?.tier} size="sm" />
+                            </View>
                             <Text style={styles.timeAgo}>
                                 {new Date(currentPost.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </Text>

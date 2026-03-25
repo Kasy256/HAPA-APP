@@ -11,11 +11,13 @@ import React, { useEffect, useState } from 'react';
 import { Alert, Dimensions, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Location from 'expo-location';
 
 import { SkeletonBox } from '@/components/Skeleton';
-import { apiFetch, clearAuthTokens, deletePost } from '@/lib/api';
+import { apiFetch, clearAuthTokens, deletePost, logWalkin } from '@/lib/api';
 import { getTimeAgo } from '@/lib/time';
 import { supabase } from '@/lib/supabaseClient';
+import { isNearVenue, UserLocation } from '@/lib/location';
 
 function VideoThumbnail({ uri }: { uri: string }) {
   const player = useVideoPlayer(uri, p => {
@@ -41,7 +43,8 @@ export default function VenueHomeScreen() {
   const [recentPosts, setRecentPosts] = useState<any[]>([]);
   const [loadingPosts, setLoadingPosts] = useState(true);
   const [loadingVenue, setLoadingVenue] = useState(true);
-  const [metrics, setMetrics] = useState({ likes: 0, views: 0 });
+  const [metrics, setMetrics] = useState({ likes: 0, views: 0, post_shares: 0, walkins_count: 0 });
+  const [venueCoords, setVenueCoords] = useState<{ lat?: number, lng?: number }>({});
 
   // Merge pending post with fetched posts for optimistic UI
   const displayPosts = pendingPost ? [pendingPost, ...recentPosts] : recentPosts;
@@ -58,6 +61,9 @@ export default function VenueHomeScreen() {
         }
         if (data.venue?.metrics) {
           setMetrics(data.venue.metrics);
+        }
+        if (data.venue?.lat && data.venue?.lng) {
+          setVenueCoords({ lat: data.venue.lat, lng: data.venue.lng });
         }
       } catch {
         // If we can't load venue details, keep default name and show empty state.
@@ -91,6 +97,40 @@ export default function VenueHomeScreen() {
     }, [venueId])
   );
 
+  // Proximity Geofence Walk-in Check
+  useFocusEffect(
+    React.useCallback(() => {
+      const checkProximity = async () => {
+        if (!venueId || !venueCoords.lat || !venueCoords.lng) return;
+
+        // Check 3-hour deduplication window locally
+        const DEDUP_MS = 3 * 60 * 60 * 1000;
+        const lastWalkinStr = await AsyncStorage.getItem(`hapa_walkin_${venueId}`);
+        if (lastWalkinStr) {
+          const lastWalkinTs = parseInt(lastWalkinStr, 10);
+          if (Date.now() - lastWalkinTs < DEDUP_MS) return; // skipped locally
+        }
+
+        const { status } = await Location.getForegroundPermissionsAsync();
+        if (status !== 'granted') return;
+
+        try {
+          const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          const near = isNearVenue(pos.coords.latitude, pos.coords.longitude, venueCoords.lat, venueCoords.lng, 175);
+          
+          if (near) {
+            await logWalkin(venueId, 'proximity');
+            await AsyncStorage.setItem(`hapa_walkin_${venueId}`, Date.now().toString());
+          }
+        } catch (err) {
+          console.warn('[Proximity Check] Failed:', err);
+        }
+      };
+
+      checkProximity();
+    }, [venueId, venueCoords])
+  );
+
   const handleSignOut = async () => {
     try {
       console.log('[Logout] Initiating full sign out from dashboard...');
@@ -102,30 +142,16 @@ export default function VenueHomeScreen() {
       // 2. Clear custom auth tokens
       await clearAuthTokens();
 
-      // 3. Remove launch preference — must complete before navigation
-      await AsyncStorage.removeItem('hapa_active_role');
-
-      // 4. Small flush to ensure AsyncStorage commit
+      // 3. Small flush to ensure AsyncStorage commit
       await new Promise(resolve => setTimeout(resolve, 50));
 
       console.log('[Logout] Cleared. Navigating to start...');
       router.replace('/');
     } catch (err) {
       console.error('[Logout] Critical failure:', err);
-      await AsyncStorage.removeItem('hapa_active_role').catch(() => {});
       router.replace('/');
     }
   };
-
-  const handleSwitchToDiscover = async () => {
-    try {
-      await AsyncStorage.setItem('hapa_active_role', 'discover');
-      router.replace('/discover');
-    } catch (e) {
-      console.error('Failed to switch mode:', e);
-    }
-  };
-
   const handleDeleteAccount = () => {
     Alert.alert(
       "Delete Account",
@@ -197,14 +223,6 @@ export default function VenueHomeScreen() {
             )}
           </View>
           <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
-            <TouchableOpacity
-              style={styles.pillButton}
-              activeOpacity={0.7}
-              onPress={handleSwitchToDiscover}
-            >
-              <Ionicons name="eye-outline" size={18} color={Colors.text.primary} />
-              <Text style={styles.pillButtonText}>Discover</Text>
-            </TouchableOpacity>
             <TouchableOpacity
               style={styles.iconButton}
               activeOpacity={0.7}
@@ -295,6 +313,46 @@ export default function VenueHomeScreen() {
             )}
           </View>
         </View>
+
+        {/* Elite Analytics Metrics */}
+        {!subscription.loading && subscription.tier === 'elite' && (
+          <View style={styles.statsContainer}>
+            <View style={styles.statCard}>
+              <View style={[styles.iconBox, { backgroundColor: 'rgba(255, 215, 0, 0.2)' }]}>
+                <Ionicons name="footsteps" size={24} color="#FFD700" />
+              </View>
+              {loadingVenue ? (
+                <>
+                  <SkeletonBox width={60} height={20} borderRadius={10} />
+                  <View style={{ height: 6 }} />
+                  <SkeletonBox width={80} height={14} borderRadius={8} />
+                </>
+              ) : (
+                <>
+                  <Text style={styles.statNumber}>{metrics.walkins_count}</Text>
+                  <Text style={styles.statLabel}>Walk-ins</Text>
+                </>
+              )}
+            </View>
+            <View style={styles.statCard}>
+              <View style={[styles.iconBox, { backgroundColor: 'rgba(29, 155, 240, 0.2)' }]}>
+                <Ionicons name="share-social" size={24} color="#1D9BF0" />
+              </View>
+              {loadingVenue ? (
+                <>
+                  <SkeletonBox width={60} height={20} borderRadius={10} />
+                  <View style={{ height: 6 }} />
+                  <SkeletonBox width={80} height={14} borderRadius={8} />
+                </>
+              ) : (
+                <>
+                  <Text style={styles.statNumber}>{metrics.post_shares}</Text>
+                  <Text style={styles.statLabel}>Post Shares</Text>
+                </>
+              )}
+            </View>
+          </View>
+        )}
 
         {/* Recent Posts */}
         <View style={styles.sectionHeader}>

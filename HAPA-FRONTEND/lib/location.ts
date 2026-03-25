@@ -102,3 +102,30 @@ export function estimateTravelTime(lat1: number, lon1: number, lat2: number, lon
     return `${hours}h ${mins}m away`;
   }
 }
+
+/**
+ * Returns true when the user is within `radiusMetres` of the venue.
+ * Uses the same Haversine implementation as calculateDistance so there
+ * is a single source of truth for distance maths.
+ *
+ * @param userLat      - User's current latitude
+ * @param userLng      - User's current longitude
+ * @param venueLat     - Venue latitude from the database
+ * @param venueLng     - Venue longitude from the database
+ * @param radiusMetres - Detection radius in metres (default: 175)
+ */
+export function isNearVenue(
+  userLat: number,
+  userLng: number,
+  venueLat: number,
+  venueLng: number,
+  radiusMetres = 175
+): boolean {
+  // calculateDistance returns km with a 1.35× road-routing penalty.
+  // For proximity detection we want straight-line metres, so we
+  // divide by the penalty factor and convert km → m.
+  const straightLineKm = calculateDistance(userLat, userLng, venueLat, venueLng) / 1.35;
+  const straightLineMetres = straightLineKm * 1000;
+  return straightLineMetres <= radiusMetres;
+}
+

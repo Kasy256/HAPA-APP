@@ -92,16 +92,23 @@ serve(async (req) => {
     if (req.method === "OPTIONS") return new Response("ok", { headers });
 
     try {
-        const authHeader = req.headers.get("Authorization") || `Bearer ${Deno.env.get("SUPABASE_ANON_KEY")}`;
-        const token = authHeader.replace('Bearer ', '');
+        const authHeader = req.headers.get("Authorization");
+        const token = authHeader?.replace('Bearer ', '');
+        
+        let user = null;
+        let authError = null;
 
         const supabaseClient = createClient(
             Deno.env.get("SUPABASE_URL") ?? "",
             Deno.env.get("SUPABASE_ANON_KEY") ?? "",
-            { global: { headers: { Authorization: authHeader } } }
+            { global: { headers: { Authorization: authHeader || `Bearer ${Deno.env.get("SUPABASE_ANON_KEY")}` } } }
         );
 
-        const { data: { user }, error: authError } = await supabaseClient.auth.getUser(token);
+        if (token && token !== Deno.env.get("SUPABASE_ANON_KEY")) {
+            const { data, error } = await supabaseClient.auth.getUser(token);
+            user = data?.user;
+            authError = error;
+        }
 
         const subPath = req.headers.get('x-sub-path') || '/';
         const pathParts = subPath.split("?")[0].split("/").filter(Boolean);
@@ -142,7 +149,9 @@ serve(async (req) => {
 
             const mergedMetrics = {
                 ...(venue.metrics || { likes: 0, views: 0 }),
-                likes: totalMetrics.likes
+                likes: totalMetrics.likes,
+                walkins_count: venue.walkins_count || 0,
+                post_shares: venue.post_shares || 0
             };
 
             return new Response(JSON.stringify({
@@ -186,7 +195,9 @@ serve(async (req) => {
         // --- ROUTE: POST /:id/view (Track view) ---
         if (pathParts.length === 2 && pathParts[1] === "view" && req.method === "POST") {
             const venueId = pathParts[0];
-            if (!authError && user) {
+            let isOwner = false;
+
+            if (user) {
                 // Instagram standard: skip self-views (venue owners viewing their own venue)
                 const { data: venueOwnerCheck } = await supabaseAdmin
                     .from("venues")
@@ -194,16 +205,16 @@ serve(async (req) => {
                     .eq("id", venueId)
                     .maybeSingle();
 
-                const isOwner = venueOwnerCheck?.owner_id === user.id;
+                isOwner = venueOwnerCheck?.owner_id === user.id;
+            }
 
-                if (!isOwner) {
-                    try {
-                        await supabaseAdmin.rpc("track_venue_view", {
-                            target_venue_id: venueId, viewer_user_id: user.id
-                        });
-                    } catch (e) {
-                        console.error("Error tracking venue view:", e);
-                    }
+            if (!isOwner) {
+                try {
+                    await supabaseAdmin.rpc("track_venue_view", {
+                        target_venue_id: venueId, viewer_user_id: user?.id || null
+                    });
+                } catch (e) {
+                    console.error("Error tracking venue view:", e);
                 }
             }
             return new Response(JSON.stringify({ success: true }), {
@@ -308,6 +319,27 @@ serve(async (req) => {
             return new Response(JSON.stringify({ venue: updated }), {
                 headers: { ...headers, "Content-Type": "application/json" },
             });
+        }
+
+        // --- ROUTE: POST /:id/walkin (Record Walk-in) ---
+        if (pathParts.length === 2 && pathParts[1] === "walkin" && req.method === "POST") {
+            const venueId = pathParts[0];
+            const body = await req.json().catch(() => ({}));
+            const source = body.source || 'directions_tap';
+
+            try {
+                const { data: status } = await supabaseAdmin.rpc("log_venue_walkin", {
+                    p_venue_id: venueId,
+                    p_user_id: user?.id || null,
+                    p_source: source
+                });
+                return new Response(JSON.stringify({ success: true, status }), {
+                    headers: { ...headers, "Content-Type": "application/json" },
+                });
+            } catch (e) {
+                console.error("Error logging walk-in:", e);
+                return new Response(JSON.stringify({ error: e.message }), { status: 400, headers });
+            }
         }
 
         return new Response(JSON.stringify({ error: "Not Found or Method Not Allowed" }), { status: 404 });

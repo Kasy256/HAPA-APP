@@ -126,27 +126,10 @@ export default function VenueProfileScreen() {
         );
     };
 
-     const handleSwitchToDiscover = async () => {
-        try {
-            await AsyncStorage.setItem('hapa_active_role', 'discover');
-            router.replace('/discover');
-        } catch (e) {
-            console.error('Failed to switch mode:', e);
-        }
-    };
-
     if (!venue && !loading) {
         return (
             <ScreenWrapper>
                 <View style={[styles.headerActions, { flexDirection: 'row', gap: 10, alignItems: 'center' }]}>
-                    <TouchableOpacity
-                        style={styles.pillButton}
-                        activeOpacity={0.7}
-                        onPress={handleSwitchToDiscover}
-                    >
-                        <Ionicons name="eye-outline" size={18} color="white" />
-                        <Text style={styles.pillButtonText}>Discover</Text>
-                    </TouchableOpacity>
                     <TouchableOpacity
                         style={styles.iconButton}
                         activeOpacity={0.7}
@@ -193,14 +176,6 @@ export default function VenueProfileScreen() {
 
                 {/* Header Actions */}
                 <View style={[styles.headerActions, { flexDirection: 'row', gap: 10, alignItems: 'center' }]}>
-                    <TouchableOpacity
-                        style={styles.pillButton}
-                        activeOpacity={0.7}
-                        onPress={handleSwitchToDiscover}
-                    >
-                        <Ionicons name="eye-outline" size={18} color="white" />
-                        <Text style={styles.pillButtonText}>Discover</Text>
-                    </TouchableOpacity>
                     <TouchableOpacity
                         style={styles.iconButton}
                         activeOpacity={0.7}

@@ -48,11 +48,9 @@ def create_venue_route():
     user_doc = users[0] if users else None
     if not user_doc or not user_doc.get("phone_number"):
         return jsonify({"error": "User does not have a phone number"}), 400
-    
+
     contact_phone = user_doc["phone_number"]
 
-    # MVP: No automatic geocoding. 
-    # Valid address string is whatever the user provided or composed.
     if address or city or area:
         if not address:
             address = f"{area}, {city}"
@@ -67,8 +65,6 @@ def create_venue_route():
         categories=categories,
         images=images,
         address=address,
-        # lat=lat,
-        # lng=lng,
     )
     if working_hours:
         venue_row["working_hours"] = working_hours
@@ -92,7 +88,6 @@ def get_my_venue():
         supabase.table("venues")
         .select("*")
         .eq("owner_id", user_id)
-        .eq("owner_id", user_id)
         .limit(1)
         .execute()
     )
@@ -102,7 +97,7 @@ def get_my_venue():
     if not venue_doc:
         return jsonify({"venue": None}), 200
 
-    # Calculate total post metrics (likes and views across all posts)
+    # Aggregate post metrics (likes, views) across all posts for this venue
     posts_resp = (
         supabase.table("posts")
         .select("metrics")
@@ -110,18 +105,22 @@ def get_my_venue():
         .execute()
     )
     posts = posts_resp.data or []
-    
+
     total_likes = 0
     total_views = 0
     for post in posts:
-        metrics = post.get("metrics", {})
-        total_likes += metrics.get("likes", 0)
-        total_views += metrics.get("views", 0)
-    
-    # Override venue metrics with post aggregates for dashboard display
+        m = post.get("metrics", {})
+        total_likes += m.get("likes", 0)
+        total_views += m.get("views", 0)
+
+    # Merge computed post aggregates with the persistent venue-level counters.
+    # walkins_count and post_shares are maintained as dedicated integer columns
+    # on the venues table and incremented atomically via DB functions.
     venue_doc["metrics"] = {
         "likes": total_likes,
-        "views": total_views
+        "views": total_views,
+        "post_shares": venue_doc.get("post_shares", 0),
+        "walkins_count": venue_doc.get("walkins_count", 0),
     }
 
     return jsonify({"venue": venue_to_dict(venue_doc)}), 200
@@ -141,7 +140,7 @@ def get_venue(venue_id: str):
     except Exception as e:
         print(f"Error fetching venue: {e}")
         return jsonify({"error": "Failed to fetch venue"}), 500
-    
+
     venues = resp.data or []
     doc = venues[0] if venues else None
     if not doc:
@@ -159,12 +158,10 @@ def update_venue(venue_id: str):
     user_id = get_jwt_identity()
     supabase = get_supabase()
 
-    # Ensure the venue exists and belongs to the current user
     existing_resp = (
         supabase.table("venues")
         .select("*")
         .eq("id", venue_id)
-        .eq("owner_id", user_id)
         .eq("owner_id", user_id)
         .limit(1)
         .execute()
@@ -180,8 +177,6 @@ def update_venue(venue_id: str):
         if field in data:
             updates[field] = data[field]
 
-    # MVP: No re-geocoding.
-    # Just ensure address field is populated if missing
     if any(key in data for key in ["address", "city", "area"]):
         address_str = (
             updates.get("address")
@@ -201,7 +196,6 @@ def update_venue(venue_id: str):
         supabase.table("venues")
         .select("*")
         .eq("id", venue_id)
-        .eq("id", venue_id)
         .limit(1)
         .execute()
     )
@@ -210,24 +204,79 @@ def update_venue(venue_id: str):
     return jsonify({"venue": venue_to_dict(updated)}), 200
 
 
-
-
-
-
 @bp.post("/<venue_id>/view")
 @jwt_required(optional=True)
 @limiter.limit("60 per minute")
 def track_view(venue_id: str):
-    user_id = get_jwt_identity() # None if not logged in
+    user_id = get_jwt_identity()  # None if not logged in
     supabase = get_supabase()
 
     try:
         supabase.rpc(
-            "track_venue_view", 
+            "track_venue_view",
             {"target_venue_id": venue_id, "viewer_user_id": user_id}
         ).execute()
         return jsonify({"success": True}), 200
     except Exception as e:
         print(f"Error tracking view: {e}")
-        # Fail silently to client for analytics
         return jsonify({"success": False}), 200
+
+
+@bp.post("/<venue_id>/walkin")
+@jwt_required(optional=True)
+@limiter.limit("10 per minute")
+def log_walkin(venue_id: str):
+    """
+    Log a walk-in event for a venue.
+
+    Body:
+        source (str): 'directions_tap' | 'proximity'
+
+    Deduplication:
+        Enforced server-side via the `log_venue_walkin` Postgres function.
+        - Authenticated users: one log per (user, venue) per 3-hour rolling window.
+        - Anonymous users: always logged (rate-limited at API layer to 10/min).
+
+    Returns:
+        200  {"result": "logged" | "skipped"}
+        400  {"error": "..."}   — bad source value
+        404  {"error": "..."}   — venue not found
+    """
+    user_id = get_jwt_identity()  # None if anonymous
+    supabase = get_supabase()
+
+    data = request.get_json() or {}
+    source = data.get("source")
+
+    if source not in ("directions_tap", "proximity"):
+        return jsonify({"error": "source must be 'directions_tap' or 'proximity'"}), 400
+
+    # Guard: verify venue exists before logging (prevents phantom-ID pollution)
+    venue_check = (
+        supabase.table("venues")
+        .select("id")
+        .eq("id", venue_id)
+        .limit(1)
+        .execute()
+    )
+    if not (venue_check.data or []):
+        return jsonify({"error": "Venue not found"}), 404
+
+    try:
+        result = supabase.rpc(
+            "log_venue_walkin",
+            {
+                "p_venue_id": venue_id,
+                "p_user_id": user_id,
+                "p_source": source,
+            }
+        ).execute()
+
+        outcome = result.data  # 'logged' | 'skipped'
+        return jsonify({"result": outcome}), 200
+
+    except Exception as e:
+        print(f"[walkin] Error logging walk-in for venue {venue_id}: {e}")
+        # Non-critical analytics call — silently return 200 to avoid
+        # disrupting the user action that triggered it (e.g., Directions tap)
+        return jsonify({"result": "error"}), 200

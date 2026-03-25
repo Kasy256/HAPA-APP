@@ -4,10 +4,11 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Dimensions, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Dimensions, Image, StyleSheet, Text, TouchableOpacity, View, Share } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Linking from 'expo-linking';
 
-import { apiFetch, isVideoUrl } from '@/lib/api';
+import { apiFetch, isVideoUrl, sharePost } from '@/lib/api';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
@@ -197,6 +198,26 @@ export default function StoryScreen() {
         }
     };
 
+    // Handle Share
+    const handleShare = async () => {
+        if (!currentPost) return;
+        try {
+            const appUrl = Linking.createURL('/story/' + currentPost.id);
+            const webUrl = 'https://get-hapa.web.app';
+            
+            const result = await Share.share({
+                message: `Check out this vibe on HAPA! 🕺✨\n\nApp: ${appUrl}\n\nDon't have the app? Download here: ${webUrl}`,
+            });
+
+            if (result.action === Share.sharedAction) {
+                sharePost(currentPost.id);
+            }
+        } catch (error) {
+            console.error("Error sharing story:", error);
+        }
+    };
+
+
     if (!currentPost && loading) {
         return (
             <View style={styles.container}>
@@ -296,6 +317,11 @@ export default function StoryScreen() {
                                     color={currentPost.is_liked ? "#ff0050" : "white"}
                                 />
                                 <Text style={styles.actionText}>{currentPost.metrics?.likes || 0}</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity onPress={handleShare} style={styles.actionButton}>
+                                <Ionicons name="share-social-outline" size={26} color="white" />
+                                <Text style={styles.actionText}>Share</Text>
                             </TouchableOpacity>
                         </View>
                     </View>

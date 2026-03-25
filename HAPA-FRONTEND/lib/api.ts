@@ -193,5 +193,47 @@ export async function loginWithSupabase(supabaseAccessToken: string) {
 export async function deletePost(postId: string) {
   return apiFetch(`/api/posts/${postId}`, {
     method: 'DELETE',
+    auth: true,
   });
 }
+
+/**
+ * Records a post share event.
+ * Call this *after* the native OS share sheet confirms the action.
+ * Atomically increments the post-level share counter and the venue-level
+ * post_shares aggregate via a single Postgres DB function.
+ *
+ * Non-blocking by design — fire and forget; never await in UI hot paths.
+ */
+export async function sharePost(postId: string): Promise<void> {
+  try {
+    await apiFetch(`/api/posts/${postId}/share`, { method: 'POST' });
+  } catch (err) {
+    // Analytics — never surface errors to the user
+    console.warn('[sharePost] Failed silently:', err);
+  }
+}
+
+/**
+ * Logs a walk-in event for a venue.
+ * Server-side 3-hour dedup is enforced per (user, venue) window.
+ *
+ * @param venueId   - UUID of the venue
+ * @param source    - 'directions_tap' | 'proximity'
+ *
+ * Non-blocking by design — fire and forget; never await in UI hot paths.
+ */
+export async function logWalkin(
+  venueId: string,
+  source: 'directions_tap' | 'proximity'
+): Promise<void> {
+  try {
+    await apiFetch(`/api/venues/${venueId}/walkin`, {
+      method: 'POST',
+      body: JSON.stringify({ source }),
+    });
+  } catch (err) {
+    console.warn('[logWalkin] Failed silently:', err);
+  }
+}
+

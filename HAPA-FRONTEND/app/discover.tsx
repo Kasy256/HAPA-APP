@@ -17,7 +17,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { MediaPreview } from '@/components/MediaPreview';
 import { SkeletonBox } from '@/components/Skeleton';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
-import { apiFetch, clearAuthTokens, getTransformedImageUrl, isVideoUrl, isVenueOwner } from '@/lib/api';
+import { apiFetch, clearAuthTokens, getTransformedImageUrl, isVideoUrl } from '@/lib/api';
 import { estimateTravelTime, getUserCityAndCoords, UserLocation, getLocationPermission } from '@/lib/location';
 import { openDirections } from '@/lib/directions';
 import { getTimeAgo } from '@/lib/time';
@@ -53,20 +53,14 @@ export default function DiscoverScreen() {
     const [loadingLocation, setLoadingLocation] = useState(true);
     const [distanceFilter, setDistanceFilter] = useState(10);
     const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'undetermined'>('undetermined');
-    const [isOwner, setIsOwner] = useState(false);
     const [showPromoCard, setShowPromoCard] = useState(false);
     const [showSuggestions, setShowSuggestions] = useState(false);
     const translateX = useSharedValue(0);
 
     useEffect(() => {
         const checkStatus = async () => {
-            const owner = await isVenueOwner();
-            setIsOwner(owner);
-            
-            if (!owner) {
-                const hidden = await AsyncStorage.getItem('hapa_hide_promotion_card');
-                if (!hidden) setShowPromoCard(true);
-            }
+            const hidden = await AsyncStorage.getItem('hapa_hide_promotion_card');
+            if (!hidden) setShowPromoCard(true);
         };
         checkStatus();
     }, []);
@@ -82,19 +76,8 @@ export default function DiscoverScreen() {
 
     const handleSignOut = useCallback(async () => {
         await clearAuthTokens();
-        await AsyncStorage.removeItem('hapa_active_role');
         router.replace('/');
     }, [router]);
-
-    const handleSwitchToManagement = async () => {
-        try {
-            await AsyncStorage.setItem('hapa_active_role', 'promote');
-            router.replace('/(venue)');
-        } catch (e) {
-            console.error('Failed to switch to management:', e);
-        }
-    };
-
     const handleHidePromo = async () => {
         try {
             await AsyncStorage.setItem('hapa_hide_promotion_card', 'true');
@@ -491,16 +474,6 @@ export default function DiscoverScreen() {
                             </View>
 
                             <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
-                                {isOwner && (
-                                    <TouchableOpacity
-                                        style={styles.pillButton}
-                                        activeOpacity={0.7}
-                                        onPress={handleSwitchToManagement}
-                                    >
-                                        <Ionicons name="business-outline" size={18} color={Colors.text.primary} />
-                                        <Text style={styles.pillButtonText}>Management</Text>
-                                    </TouchableOpacity>
-                                )}
                                 <TouchableOpacity
                                     style={styles.iconButton}
                                     activeOpacity={0.7}

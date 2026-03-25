@@ -264,4 +264,51 @@ def delete_post(post_id: str):
         return jsonify({"error": str(e)}), 500
 
 
+@bp.post("/<post_id>/share")
+@jwt_required(optional=True)
+@limiter.limit("20 per minute")
+def share_post(post_id: str):
+    """
+    Record a share event for a post.
+
+    Called by the frontend *after* the native OS share sheet confirms the user
+    shared successfully. Atomically increments:
+      - posts.metrics->>'shares'  (post-level counter in JSONB)
+      - venues.post_shares        (venue-level aggregate integer column)
+
+    Both increments happen inside one Postgres function to prevent partial
+    updates in the event of a mid-operation failure.
+
+    Returns:
+        200  {"success": true}
+        404  {"error": "..."}   — post not found
+    """
+    supabase = get_supabase()
+
+    # Verify the post exists and retrieve its venue_id in a single query
+    post_resp = (
+        supabase.table("posts")
+        .select("id, venue_id")
+        .eq("id", post_id)
+        .limit(1)
+        .execute()
+    )
+    posts_found = post_resp.data or []
+    if not posts_found:
+        return jsonify({"error": "Post not found"}), 404
+
+    venue_id = posts_found[0]["venue_id"]
+
+    try:
+        supabase.rpc(
+            "increment_post_shares",
+            {"target_post_id": post_id, "target_venue_id": venue_id}
+        ).execute()
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        print(f"[share] Error incrementing share for post {post_id}: {e}")
+        # Non-critical analytics — silently continue to client
+        return jsonify({"success": False}), 200
+
+
 

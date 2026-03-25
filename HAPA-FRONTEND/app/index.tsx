@@ -1,73 +1,39 @@
 import { ScreenWrapper } from '@/components/ScreenWrapper';
 import { Colors } from '@/constants/Colors';
 import { Ionicons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { ActivityIndicator, Image, StyleSheet, Text, TouchableOpacity, View, Linking } from 'react-native';
+
 import { isVenueOwner } from '@/lib/api';
 import { supabase } from '@/lib/supabaseClient';
 import HapaLogo from '../assets/images/hapa.png';
 
-const LAUNCH_PREF_KEY = 'hapa_active_role'; // 'discover' | 'promote'
-
 export default function StartScreen() {
     const router = useRouter();
-    const [dontShowAgain, setDontShowAgain] = useState(false);
-    const [checking, setChecking] = useState(true);
+    const [checking, setChecking] = useState(false);
 
-    // On mount: check if user has a saved launch preference or an active session
-    useEffect(() => {
-        const checkPreference = async () => {
-            try {
-                // 1. Check if user is a logged-in venue owner
-                const { data: { session } } = await supabase.auth.getSession();
-                const ownerLoggedIn = session && (await isVenueOwner());
-
-                const pref = await AsyncStorage.getItem(LAUNCH_PREF_KEY);
-
-                // 2. If owner is logged in AND their last mode was 'promote' (or first time)
-                if (ownerLoggedIn && (pref === 'promote' || !pref)) {
-                    router.replace('/(venue)');
-                    return;
-                }
-
-                // 3. Otherwise, honor the preference if it exists
-                if (pref === 'discover') {
-                    router.replace('/discover');
-                    return;
-                }
-                
-                // If they specifically want to promote but aren't logged in, send to login
-                if (pref === 'promote' && !ownerLoggedIn) {
-                    router.replace('/venue-login');
-                    return;
-                }
-            } catch (e) {
-                console.warn('[StartScreen] Error during routing check:', e);
-            }
-            setChecking(false);
-        };
-        checkPreference();
-    }, []);
-
-    const handleDiscover = async () => {
-        if (dontShowAgain) {
-            await AsyncStorage.setItem(LAUNCH_PREF_KEY, 'discover');
-        }
+    const handleDiscover = () => {
         router.push('/discover');
     };
 
     const handlePromote = async () => {
-        if (dontShowAgain) {
-            await AsyncStorage.setItem(LAUNCH_PREF_KEY, 'promote');
-        }
-        
-        const ownerLoggedIn = await isVenueOwner();
-        if (ownerLoggedIn) {
-            router.push('/(venue)');
-        } else {
+        setChecking(true);
+        try {
+            // Check if user has an active authenticated venue session
+            const { data: { session } } = await supabase.auth.getSession();
+            const ownerLoggedIn = session && (await isVenueOwner());
+
+            if (ownerLoggedIn) {
+                router.push('/(venue)');
+            } else {
+                router.push('/venue-login');
+            }
+        } catch (e) {
+            console.error('[StartScreen] Error checking auth:', e);
             router.push('/venue-login');
+        } finally {
+            setChecking(false);
         }
     };
 
@@ -122,17 +88,6 @@ export default function StartScreen() {
                         <Text style={styles.cardTitle}>Promote</Text>
                         <Text style={styles.cardSubtitle}>Post and manage your venue</Text>
                     </View>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                    style={styles.checkboxContainer}
-                    onPress={() => setDontShowAgain(prev => !prev)}
-                    activeOpacity={0.7}
-                >
-                    <View style={[styles.checkbox, dontShowAgain && styles.checkboxChecked]}>
-                        {dontShowAgain && <Ionicons name="checkmark" size={16} color="white" />}
-                    </View>
-                    <Text style={styles.checkboxText}>Don't show this again</Text>
                 </TouchableOpacity>
             </View>
 
@@ -206,31 +161,6 @@ const styles = StyleSheet.create({
         fontSize: 15,
         color: Colors.text.secondary,
         marginTop: 4,
-    },
-    checkboxContainer: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginTop: 24,
-        gap: 12,
-    },
-    checkbox: {
-        width: 22,
-        height: 22,
-        borderRadius: 6,
-        borderWidth: 1,
-        borderColor: 'rgba(255,255,255,0.3)',
-        backgroundColor: 'rgba(255,255,255,0.1)',
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    checkboxChecked: {
-        backgroundColor: Colors.cta.primary,
-        borderColor: Colors.cta.primary,
-    },
-    checkboxText: {
-        color: Colors.text.secondary,
-        fontSize: 15,
     },
     footer: {
         alignItems: 'center',

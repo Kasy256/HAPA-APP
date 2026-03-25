@@ -141,6 +141,33 @@ serve(async (req) => {
             });
         }
 
+        // --- ROUTE: POST /:id/share (Record Share) ---
+        if (req.method === "POST" && pathParts.length === 2 && pathParts[1] === "share") {
+            const postId = pathParts[0];
+            
+            // We need venue_id for the RPC. Fetch it first.
+            const { data: post } = await supabaseAdmin
+                .from("posts")
+                .select("venue_id")
+                .eq("id", postId)
+                .single();
+
+            if (post?.venue_id) {
+                try {
+                    await supabaseAdmin.rpc("increment_post_shares", {
+                        target_post_id: postId,
+                        target_venue_id: post.venue_id
+                    });
+                } catch (e) {
+                    console.error("Error incrementing share count:", e);
+                }
+            }
+
+            return new Response(JSON.stringify({ success: true }), {
+                headers: { ...headers, "Content-Type": "application/json" },
+            });
+        }
+
         // --- AUTHENTICATED ROUTES BELOW ---
         if (!userId) {
             if (req.method !== "OPTIONS") {

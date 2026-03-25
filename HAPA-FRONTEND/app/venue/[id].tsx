@@ -1,16 +1,16 @@
-
 import { ScreenWrapper } from '@/components/ScreenWrapper';
 import { Colors } from '@/constants/Colors';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Dimensions, FlatList, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Dimensions, FlatList, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View, Linking as RNLinking, Share } from 'react-native';
+import * as Linking from 'expo-linking';
 
 import { MediaPreview } from '@/components/MediaPreview';
 import { SkeletonBox, SkeletonCircle } from '@/components/Skeleton';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
-import { apiFetch, getTransformedImageUrl, isVideoUrl } from '@/lib/api';
+import { apiFetch, getTransformedImageUrl, isVideoUrl, logWalkin, sharePost } from '@/lib/api';
 import { getTimeAgo } from '@/lib/time';
 import { openDirections } from '@/lib/directions';
 import { getVenueStatusText, isVenueOpen } from '@/lib/venue';
@@ -168,13 +168,23 @@ export default function PublicVenueProfileScreen() {
                         </View>
 
                         <View style={styles.actionRow}>
-                            <TouchableOpacity style={styles.actionButton}>
-                                <Ionicons name="call-outline" size={20} color="white" />
-                                <Text style={styles.actionText}>Call</Text>
-                            </TouchableOpacity>
+                            {venue?.contact_phone && (
+                                <TouchableOpacity 
+                                    style={styles.actionButton}
+                                    onPress={() => Linking.openURL(`tel:${venue.contact_phone}`)}
+                                >
+                                    <Ionicons name="call-outline" size={20} color="white" />
+                                    <Text style={styles.actionText}>Call</Text>
+                                </TouchableOpacity>
+                            )}
                             <TouchableOpacity
                                 style={styles.actionButton}
-                                onPress={() => openDirections(venue?.lat, venue?.lng, venue?.name)}
+                                onPress={() => {
+                                    if (venue?.id) {
+                                        logWalkin(venue.id, 'directions_tap');
+                                    }
+                                    openDirections(venue?.lat, venue?.lng, venue?.name);
+                                }}
                             >
                                 <Ionicons name="navigate-outline" size={20} color="white" />
                                 <Text style={styles.actionText}>Directions</Text>
@@ -225,6 +235,25 @@ export default function PublicVenueProfileScreen() {
                                         colors={['transparent', 'rgba(0,0,0,0.8)']}
                                         style={styles.postGradient}
                                     />
+                                    
+                                    {/* Share Vibes Button */}
+                                    <TouchableOpacity 
+                                        style={styles.shareButton}
+                                        onPress={(e) => {
+                                            e.stopPropagation(); // prevent opening story
+                                            const appUrl = Linking.createURL('/story/' + p.id);
+                                            const webUrl = 'https://get-hapa.web.app';
+                                            
+                                            Share.share({
+                                                message: `Check out the vibes at ${venue?.name ?? 'this venue'} on HAPA 🎉\n\nApp: ${appUrl}\n\nDownload: ${webUrl}`,
+                                            }).then(res => {
+                                                if (res.action === Share.sharedAction) sharePost(p.id);
+                                            }).catch(() => {});
+                                        }}
+                                    >
+                                        <Ionicons name="share-social" size={18} color="white" />
+                                    </TouchableOpacity>
+
                                     <View style={styles.postContent}>
                                         {!!p.caption && (
                                             <Text style={styles.postCaption} numberOfLines={2}>
@@ -442,6 +471,19 @@ const styles = StyleSheet.create({
         color: '#000',
         fontSize: 10,
         fontWeight: 'bold',
+    },
+    shareButton: {
+        position: 'absolute',
+        top: 8,
+        right: 8,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.2)',
     },
     postContent: {
         position: 'absolute',

@@ -11,6 +11,7 @@ import { Alert, Dimensions, FlatList, Image, Linking, RefreshControl, ScrollView
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import * as Location from 'expo-location';
 import Slider from '@react-native-community/slider';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -38,6 +39,7 @@ const TAB_ITEM_WIDTH = TAB_WIDTH / 2;
 export default function DiscoverScreen() {
     const router = useRouter();
     const { pendingPost } = useUpload();
+    const insets = useSafeAreaInsets();
     const [activeTab, setActiveTab] = useState('home');
     const [venues, setVenues] = useState<any[]>([]);
     const [nearbyVenues, setNearbyVenues] = useState<any[]>([]);
@@ -92,6 +94,7 @@ export default function DiscoverScreen() {
             transform: [{ translateX: translateX.value }],
         };
     });
+    const bottomNavOffset = Math.max(insets.bottom + 12, 24);
 
     const handlePostOptions = (postId: string, venueId: string) => {
         Alert.alert(
@@ -564,7 +567,7 @@ export default function DiscoverScreen() {
                     {/* Scrollable Feed Section */}
                     <ScrollView
                         style={styles.scrollContainer}
-                        contentContainerStyle={styles.contentContainer}
+                        contentContainerStyle={[styles.contentContainer, { paddingBottom: bottomNavOffset + 86 }]}
                         showsVerticalScrollIndicator={false}
                         refreshControl={
                             <RefreshControl
@@ -737,7 +740,7 @@ export default function DiscoverScreen() {
                     )}
 
                     <ScrollView
-                        contentContainerStyle={styles.contentContainer}
+                        contentContainerStyle={[styles.contentContainer, { paddingBottom: bottomNavOffset + 86 }]}
                         showsVerticalScrollIndicator={false}
                     >
                         <View style={{ paddingHorizontal: 20, marginBottom: 16 }}>
@@ -876,7 +879,7 @@ export default function DiscoverScreen() {
             )}
 
             {/* Bottom Bar Container */}
-            <View style={styles.bottomBarWrapper}>
+            <View style={[styles.bottomBarWrapper, { bottom: bottomNavOffset }]}>
                 <BlurView intensity={20} tint="dark" style={styles.bottomBar}>
 
                     {/* Sliding Indicator */}
@@ -1229,7 +1232,6 @@ const styles = StyleSheet.create({
     },
     bottomBarWrapper: {
         position: 'absolute',
-        bottom: 40,
         alignSelf: 'center',
         borderRadius: 100,
         overflow: 'hidden',

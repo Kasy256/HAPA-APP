@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Animated, Easing, StyleProp, StyleSheet, ViewStyle } from 'react-native';
 
 type SkeletonBoxProps = {
-  width?: number | string;
+  width?: number | `${number}%` | 'auto';
   height?: number;
   borderRadius?: number;
   style?: StyleProp<ViewStyle>;
@@ -41,12 +41,7 @@ export function SkeletonBox({
     return () => anim.stop();
   }, [opacity]);
 
-  const baseStyle = useMemo(
-    () => [{ width, height, borderRadius }, styles.base, style] as const,
-    [width, height, borderRadius, style],
-  );
-
-  return <Animated.View style={[baseStyle, { opacity }]} />;
+  return <Animated.View style={[{ width, height, borderRadius }, styles.base, style, { opacity }]} />;
 }
 
 export function SkeletonCircle({ size = 56, style }: { size?: number; style?: StyleProp<ViewStyle> }) {

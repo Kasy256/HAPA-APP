@@ -8,11 +8,13 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import * as Linking from 'expo-linking';
 import Animated, { useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import { useSubscription } from '@/hooks/useSubscription';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 function CustomTabBar({ state, descriptors, navigation }: any) {
   const TAB_WIDTH = 280;
   const TAB_ITEM_WIDTH = TAB_WIDTH / 3;
   const activeIndex = state.index;
+  const insets = useSafeAreaInsets();
 
   const { options: currentOptions } = descriptors[state.routes[activeIndex].key];
   if (currentOptions.tabBarStyle?.display === 'none') {
@@ -26,7 +28,7 @@ function CustomTabBar({ state, descriptors, navigation }: any) {
   });
 
   return (
-    <View style={styles.bottomBarWrapper}>
+    <View style={[styles.bottomBarWrapper, { bottom: Math.max(insets.bottom + 12, 24) }]}>
       <BlurView intensity={60} tint="dark" style={styles.bottomBar}>
         <View style={[styles.switchContainer, { width: TAB_WIDTH }]}>
           {/* Animated Indicator */}
@@ -149,7 +151,6 @@ export default function VenueLayout() {
 const styles = StyleSheet.create({
   bottomBarWrapper: {
     position: 'absolute',
-    bottom: 40,
     alignSelf: 'center',
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 10 },

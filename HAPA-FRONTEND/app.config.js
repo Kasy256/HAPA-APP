@@ -32,7 +32,6 @@ export default {
                 'ACCESS_COARSE_LOCATION',
                 'CAMERA',
                 'RECORD_AUDIO',
-                'READ_EXTERNAL_STORAGE',
                 'READ_MEDIA_IMAGES',
                 'READ_MEDIA_VIDEO',
                 'READ_MEDIA_VISUAL_USER_SELECTED',

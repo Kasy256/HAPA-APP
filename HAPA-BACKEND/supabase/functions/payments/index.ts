@@ -409,7 +409,7 @@ serve(async (req) => {
           reference,
           plan,
           metadata,
-          callback_url: origin && origin.includes("get-hapa.web.app")
+          callback_url: origin && origin.includes("www.gethapa.com")
             ? `${origin}/dashboard?reference=${reference}`
             : `${FRONTEND_URL}/payment/callback?ref=${reference}`,
         },

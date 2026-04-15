@@ -1,7 +1,7 @@
 export const ALLOWED_ORIGINS = [
     "hapapp://",
     "exp://",
-    "https://get-hapa.web.app",
+    "https://www.gethapa.com",
 ];
 
 export const ALLOWED_METHODS = "GET, POST, PUT, DELETE, OPTIONS";

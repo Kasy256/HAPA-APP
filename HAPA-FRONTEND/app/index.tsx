@@ -93,12 +93,16 @@ export default function StartScreen() {
 
             <View style={styles.footer}>
                 <View style={styles.footerLinks}>
-                    <TouchableOpacity onPress={() => Linking.openURL('https://get-hapa.web.app/Terms.html')}>
-                        <Text style={styles.footerLink}>Terms of Use</Text>
+                    <TouchableOpacity onPress={() => Linking.openURL('https://www.gethapa.com')}>
+                        <Text style={styles.footerLink}>Website</Text>
                     </TouchableOpacity>
                     <Text style={styles.footerSeparator}>•</Text>
-                    <TouchableOpacity onPress={() => Linking.openURL('https://get-hapa.web.app/Privacy.html')}>
-                        <Text style={styles.footerLink}>Privacy Policy</Text>
+                    <TouchableOpacity onPress={() => Linking.openURL('https://www.gethapa.com/Terms.html')}>
+                        <Text style={styles.footerLink}>Terms</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.footerSeparator}>•</Text>
+                    <TouchableOpacity onPress={() => Linking.openURL('https://www.gethapa.com/Privacy.html')}>
+                        <Text style={styles.footerLink}>Privacy</Text>
                     </TouchableOpacity>
                 </View>
                 <Text style={styles.footerText}>Urban. Live. Instant.</Text>

@@ -203,7 +203,7 @@ export default function StoryScreen() {
         if (!currentPost) return;
         try {
             const appUrl = Linking.createURL('/story/' + currentPost.id);
-            const webUrl = 'https://get-hapa.web.app';
+            const webUrl = 'https://www.gethapa.com';
             
             const result = await Share.share({
                 message: `Check out this vibe on HAPA! 🕺✨\n\nApp: ${appUrl}\n\nDon't have the app? Download here: ${webUrl}`,

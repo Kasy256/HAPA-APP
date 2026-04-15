@@ -1,7 +1,7 @@
 import * as Linking from 'expo-linking';
 import * as SecureStore from 'expo-secure-store';
 
-const DASHBOARD_URL = 'https://get-hapa.web.app/dashboard';
+const DASHBOARD_URL = 'https://www.gethapa.com/dashboard';
 const TOKEN_KEY = 'hapa_access_token';
 
 export interface OpenDashboardParams {

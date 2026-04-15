@@ -242,7 +242,7 @@ export default function PublicVenueProfileScreen() {
                                         onPress={(e) => {
                                             e.stopPropagation(); // prevent opening story
                                             const appUrl = Linking.createURL('/story/' + p.id);
-                                            const webUrl = 'https://get-hapa.web.app';
+                                            const webUrl = 'https://www.gethapa.com';
                                             
                                             Share.share({
                                                 message: `Check out the vibes at ${venue?.name ?? 'this venue'} on HAPA 🎉\n\nApp: ${appUrl}\n\nDownload: ${webUrl}`,

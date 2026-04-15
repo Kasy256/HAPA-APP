@@ -56,8 +56,14 @@ serve(async (req) => {
             }
 
 
-            const code = Math.floor(10000 + Math.random() * 90000).toString();
+            let code = Math.floor(10000 + Math.random() * 90000).toString();
             const expires_at = new Date(Date.now() + 10 * 60000).toISOString(); // 10 mins
+
+            // --- DEMO ACCOUNT BYPASS ---
+            const isDemoAccount = phone_number.replace(/\D/g, "") === "256700000000";
+            if (isDemoAccount) {
+                code = "12345";
+            }
 
             // Insert into otp_codes
             const { error } = await supabaseAdmin.from("otp_codes").insert({
@@ -69,6 +75,17 @@ serve(async (req) => {
             if (error) throw error;
 
             console.log(`[Deno OTP] Generated OTP for ${phone_number}`);
+
+            // Skip Africa's Talking for Demo Account to save credits
+            if (isDemoAccount) {
+                console.log(`[Deno OTP] Apple Demo Account bypassed SMS sending.`);
+                return new Response(JSON.stringify({
+                    success: true,
+                    message: "OTP sent successfully (Bypassed SMS for Demo)"
+                }), {
+                    headers: { ...headers, "Content-Type": "application/json" },
+                });
+            }
 
             // Send via Africa's Talking
             const atUsername = Deno.env.get("AFRICASTALKING_USERNAME");

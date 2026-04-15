@@ -245,16 +245,23 @@ export default function VenueProfileScreen() {
                     <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
                         <TouchableOpacity
                             style={[styles.editButton, { flex: 1, marginTop: 0 }]}
-                            onPress={() => Linking.openURL('https://get-hapa.web.app/Privacy.html')}
+                            onPress={() => Linking.openURL('https://www.gethapa.com')}
                         >
-                            <Text style={styles.editButtonText}>Privacy Policy</Text>
+                            <Text style={styles.editButtonText}>Website</Text>
                         </TouchableOpacity>
 
                         <TouchableOpacity
                             style={[styles.editButton, { flex: 1, marginTop: 0 }]}
-                            onPress={() => Linking.openURL('https://get-hapa.web.app/Terms.html')}
+                            onPress={() => Linking.openURL('https://www.gethapa.com/Privacy.html')}
                         >
-                            <Text style={styles.editButtonText}>Terms of Use</Text>
+                            <Text style={styles.editButtonText}>Privacy</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={[styles.editButton, { flex: 1, marginTop: 0 }]}
+                            onPress={() => Linking.openURL('https://www.gethapa.com/Terms.html')}
+                        >
+                            <Text style={styles.editButtonText}>Terms</Text>
                         </TouchableOpacity>
                     </View>
 

@@ -17,10 +17,18 @@ export default {
         },
         ios: {
             supportsTablet: true,
-            bundleIdentifier: 'com.hapa.app'
+            bundleIdentifier: 'com.hapa.app',
+            config: {
+                googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY
+            }
         },
         android: {
             package: 'com.hapa.app',
+            config: {
+                googleMaps: {
+                    apiKey: process.env.GOOGLE_MAPS_API_KEY
+                }
+            },
             adaptiveIcon: {
                 foregroundImage: './assets/images/hapalogo.png',
                 backgroundColor: '#FFFFFF'

@@ -82,6 +82,15 @@ export default function VenueOnboardingScreen() {
                                     onPress: () => {
                                         setFormData(draft.formData);
                                         setStep(draft.step);
+                                        if (draft.formData.lat && draft.formData.lng) {
+                                            setMapRegion({
+                                                latitude: draft.formData.lat,
+                                                longitude: draft.formData.lng,
+                                                latitudeDelta: 0.005,
+                                                longitudeDelta: 0.005,
+                                            });
+                                            setShowMap(true);
+                                        }
                                         setDraftRestored(true);
                                     },
                                 },
@@ -438,9 +447,12 @@ export default function VenueOnboardingScreen() {
                                         style={styles.map}
                                         initialRegion={mapRegion}
                                         onRegionChangeComplete={(region) => {
-                                            if (Math.abs(region.latitude - mapRegion.latitude) > 0.0001) {
+                                            // Only update if the change is significant to avoid state update loops
+                                            const latChanged = Math.abs(region.latitude - mapRegion.latitude) > 0.0001;
+                                            const lngChanged = Math.abs(region.longitude - mapRegion.longitude) > 0.0001;
+
+                                            if (latChanged || lngChanged) {
                                                 setMapRegion(region);
-                                                // Sync centered location
                                                 setFormData(prev => ({
                                                     ...prev,
                                                     lat: region.latitude,

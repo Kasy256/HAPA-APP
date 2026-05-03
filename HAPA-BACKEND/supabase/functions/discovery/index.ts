@@ -90,148 +90,117 @@ serve(async (req) => {
             }
 
             const { lat, lng, city, radius_km } = FeedSchema.parse(params);
+            const category = params.category; // Optional category filter
+            const hashtag = params.hashtag;   // Optional hashtag filter
 
-            // Priority 1: City filtering (for Discover Feed)
-            if (city && lat === undefined) {
-                const { data: rawData, error } = await supabaseAdmin
-                    .from("venues")
-                    .select("*, posts(*), venue_subscriptions(tier, status), post_boosts(starts_at, ends_at)")
-                    .eq("is_deleted", false)
-                    .eq("posts.is_deleted", false)
-                    .ilike("city", `%${city}%`);
-
-                if (error) throw error;
-
-                const rawVenues = (rawData || []).map((v: any) => {
-                    const subs = v.venue_subscriptions;
-                    const activeSub = Array.isArray(subs) 
-                        ? subs.find((s: any) => s.status === 'active')
-                        : (subs?.status === 'active' ? subs : null);
-                    
-                    return {
-                        ...v,
-                        tier: activeSub?.tier || 'free',
-                        is_boosted: (v.post_boosts || []).some((b: any) => 
-                            new Date(b.starts_at) <= now && new Date(b.ends_at) > now
-                        )
-                    };
-                });
-
-                // Sort by: Boosted > Elite > Pro > Free
-                const tierWeight: Record<string, number> = { elite: 1, pro: 2, free: 3 };
-                const venues = rawVenues.sort((a: any, b: any) => {
-                    if (a.is_boosted && !b.is_boosted) return -1;
-                    if (!a.is_boosted && b.is_boosted) return 1;
-                    return (tierWeight[a.tier] || 3) - (tierWeight[b.tier] || 3);
-                });
-
-                const posts = (venues || []).flatMap((v: any) => v.posts || []).filter((p: any) => new Date(p.expires_at) > now);
-
-                if (userId && posts.length > 0) {
-                    const postIds = posts.map((p: any) => p.id);
-                    const { data: likes } = await supabaseAdmin
-                        .from("post_likes")
-                        .select("post_id")
-                        .eq("user_id", userId)
-                        .in("post_id", postIds);
-
-                    const likedSet = new Set(likes?.map(l => l.post_id) || []);
-                    posts.forEach((p: any) => p.is_liked = likedSet.has(p.id));
-                }
-
-                return new Response(JSON.stringify({ venues, posts }), {
-                    headers: { ...headers, "Content-Type": "application/json" },
-                });
-            }
-
-            // Priority 2: Proximity filtering (for Near You)
-            if (lat !== undefined && lng !== undefined) {
-                const { data: nearbyData, error: rpcError } = await supabaseAdmin.rpc("get_nearby_vibes", {
-                    user_lat: lat,
-                    user_lng: lng,
-                    radius_meters: radius_km * 1000,
-                });
-
-                if (rpcError) throw rpcError;
-
-                const venues = (nearbyData || []).map((v: any) => ({
-                    id: v.venue_id,
-                    name: v.venue_name,
-                    area: v.venue_area,
-                    type: v.venue_type,
-                    categories: v.venue_categories,
-                    images: v.venue_images,
-                    location: v.venue_location,
-                    lat: v.venue_lat,
-                    lng: v.venue_lng,
-                    dist_meters: v.dist_meters,
-                    tier: v.tier,
-                    is_boosted: v.is_boosted,
-                }));
-
-                const posts = (nearbyData || []).filter((v: any) => v.latest_post_url).map((v: any) => ({
-                    id: `post_${v.venue_id}_${v.latest_post_created}`,
-                    venue_id: v.venue_id,
-                    media_url: v.latest_post_url,
-                    media_type: v.latest_post_type,
-                    created_at: v.latest_post_created,
-                }));
-
-                if (userId && posts.length > 0) {
-                    const postIds = posts.map((p: any) => p.id);
-                    const { data: likes } = await supabaseAdmin
-                        .from("post_likes")
-                        .select("post_id")
-                        .eq("user_id", userId)
-                        .in("post_id", postIds);
-
-                    const likedSet = new Set(likes?.map(l => l.post_id) || []);
-                    posts.forEach((p: any) => p.is_liked = likedSet.has(p.id));
-                }
-
-                return new Response(JSON.stringify({ venues, posts }), {
-                    headers: { ...headers, "Content-Type": "application/json" },
-                });
-            }
-
-            // Fallback & City: Join with subscription/boost status
-            const cityQuery = supabaseAdmin
+            let query = supabaseAdmin
                 .from("venues")
-                .select("*, posts(*), venue_subscriptions(tier, status), post_boosts(starts_at, ends_at)")
+                .select("*, venue_subscriptions(tier, status), post_boosts(starts_at, ends_at)")
                 .eq("is_deleted", false)
-                .eq("posts.is_deleted", false);
+                .or("owner_id.not.is.null,name.ilike.HAPA Global"); // Show official venues OR the global hub
 
-            if (city) cityQuery.ilike("city", `%${city}%`);
-            
-            const { data: rawData, error } = await cityQuery.limit(50);
-            if (error) throw error;
+            if (city) query = query.ilike("city", `%${city}%`);
+            if (category) query = query.contains("categories", JSON.stringify([category]));
 
-            const rawVenues = (rawData || []).map((v: any) => {
+            const { data: rawVenuesData, error: venueError } = await query.limit(100);
+            if (venueError) throw venueError;
+
+            const venues = (rawVenuesData || []).map((v: any) => {
                 const subs = v.venue_subscriptions;
-                const activeSub = Array.isArray(subs) 
+                const activeSub = Array.isArray(subs)
                     ? subs.find((s: any) => s.status === 'active')
                     : (subs?.status === 'active' ? subs : null);
-                
+
                 return {
                     ...v,
                     tier: activeSub?.tier || 'free',
-                    is_boosted: (v.post_boosts || []).some((b: any) => 
+                    is_boosted: (v.post_boosts || []).some((b: any) =>
                         new Date(b.starts_at) <= now && new Date(b.ends_at) > now
                     )
                 };
             });
 
-            const tierWeight: Record<string, number> = { elite: 1, pro: 2, free: 3 };
-            const venues = rawVenues.sort((a: any, b: any) => {
-                if (a.is_boosted && !b.is_boosted) return -1;
-                if (!a.is_boosted && b.is_boosted) return 1;
-                return (tierWeight[a.tier] || 3) - (tierWeight[b.tier] || 3);
+            const venueIds = venues.map(v => v.id);
+
+            // Fetch hybrid posts: Venue posts + User posts tagged to these venues
+            let postsQuery = supabaseAdmin
+                .from("posts")
+                .select("*, venues(owner_id), post_boosts(starts_at, ends_at)")
+                .eq("is_deleted", false)
+                .gt("expires_at", now.toISOString())
+                .order("created_at", { ascending: false });
+
+            if (hashtag) {
+                // For hashtag views, we still want to show all posts, but we'll filter 
+                // out non-official ones if they are in a search context.
+                // To avoid JSON errors, we use a simpler filter.
+                postsQuery = postsQuery.eq("hashtag", hashtag);
+            } else if (category) {
+                // For categories, we use a simpler approach to avoid join issues
+                postsQuery = postsQuery.not("venue_id", "is", null);
+            }
+
+            const { data: rawPosts, error: postsError } = await postsQuery.limit(200);
+            if (postsError) throw postsError;
+
+            const posts = (rawPosts || []).map((p: any) => {
+                const venue = venues.find(v => v.id === p.venue_id);
+
+                // Robust parsing for stringified JSON fields
+                const parseField = (field: any) => {
+                    if (typeof field === 'string') {
+                        try { return JSON.parse(field); } catch { return []; }
+                    }
+                    return Array.isArray(field) ? field : [];
+                };
+
+                const venueImages = parseField(venue?.images);
+
+                return {
+                    ...p,
+                    metrics: p.metrics || { likes: 0, views: 0, shares: 0, comments: 0 },
+                    venue_name: venue?.name,
+                    venue_image: venueImages[0] || null,
+                    venue_tier: venue?.tier,
+                    venue_lat: venue?.lat,
+                    venue_lng: venue?.lng,
+                    venue_owner_id: venue?.owner_id,
+                    is_boosted: p.is_boosted || (p.post_boosts || []).some((b: any) =>
+                        new Date(b.starts_at) <= now && new Date(b.ends_at) > now
+                    )
+                };
             });
 
-            const posts = (venues || []).flatMap((v: any) => v.posts || []).filter((p: any) => new Date(p.expires_at) > now);
+            // Sorting Logic: 
+            // 1. Elite (Boosted or Event)
+            // 2. Elite (Standard Vibe)
+            // 3. Pro (Boosted or Event)
+            // 4. Pro (Standard Vibe)
+            // 5. User/Free (Standard Vibe)
+            const sortedPosts = posts.sort((a, b) => {
+                // Tier weights: Elite = 10, Pro = 5, Free = 0
+                const getWeight = (p: any) => {
+                    let weight = 0;
+                    if (p.venue_tier === 'elite') weight += 10;
+                    else if (p.venue_tier === 'pro') weight += 5;
 
-            if (userId && posts.length > 0) {
-                const postIds = posts.map((p: any) => p.id);
+                    // Boosted or Event posts get internal priority within their tier
+                    if (p.is_boosted || p.post_type === 'event' || p.is_promoted) weight += 2;
+                    
+                    return weight;
+                };
+
+                const weightA = getWeight(a);
+                const weightB = getWeight(b);
+
+                if (weightA !== weightB) return weightB - weightA;
+
+                // Fallback to recency
+                return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+            });
+
+            if (userId && sortedPosts.length > 0) {
+                const postIds = sortedPosts.map((p: any) => p.id);
                 const { data: likes } = await supabaseAdmin
                     .from("post_likes")
                     .select("post_id")
@@ -239,13 +208,14 @@ serve(async (req) => {
                     .in("post_id", postIds);
 
                 const likedSet = new Set(likes?.map(l => l.post_id) || []);
-                posts.forEach((p: any) => p.is_liked = likedSet.has(p.id));
+                sortedPosts.forEach((p: any) => p.is_liked = likedSet.has(p.id));
             }
 
-            return new Response(JSON.stringify({ venues, posts }), {
+            return new Response(JSON.stringify({ venues, posts: sortedPosts }), {
                 headers: { ...headers, "Content-Type": "application/json" },
             });
         }
+
 
         // --- ROUTE: /search ---
         if (path === "search") {
@@ -274,7 +244,8 @@ serve(async (req) => {
             let query = supabaseAdmin
                 .from("venues")
                 .select("*, venue_subscriptions(tier, status), post_boosts(starts_at, ends_at)")
-                .eq("is_deleted", false);
+                .eq("is_deleted", false)
+                .not("owner_id", "is", null); // ONLY SHOW OFFICIAL VENUES IN SEARCH
 
             if (city) query = query.eq("city", city);
             if (area) query = query.eq("area", area);
@@ -286,14 +257,14 @@ serve(async (req) => {
             // Flatten and Sort Search Results: Boosted > Elite > Pro > Free
             const results = (resultsRaw || []).map((v: any) => {
                 const subs = v.venue_subscriptions;
-                const activeSub = Array.isArray(subs) 
+                const activeSub = Array.isArray(subs)
                     ? subs.find((s: any) => s.status === 'active')
                     : (subs?.status === 'active' ? subs : null);
-                
+
                 return {
                     ...v,
                     tier: activeSub?.tier || 'free',
-                    is_boosted: (v.post_boosts || []).some((b: any) => 
+                    is_boosted: (v.post_boosts || []).some((b: any) =>
                         new Date(b.starts_at) <= now && new Date(b.ends_at) > now
                     )
                 };

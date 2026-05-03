@@ -36,7 +36,22 @@ export default function StoryScreen() {
             if (!vId && postId) {
                 try {
                     const data = await apiFetch(`/api/posts/${postId}`);
-                    setPosts([data.post]);
+                    const p = data.post;
+                    
+                    // Flatten if it's a slideshow
+                    if (typeof p.media_url === 'string' && p.media_url.startsWith('[')) {
+                        try {
+                            const urls = JSON.parse(p.media_url);
+                            if (Array.isArray(urls)) {
+                                setPosts(urls.map(url => ({ ...p, media_url: url })));
+                                setVenue(data.venue);
+                                setLoading(false);
+                                return;
+                            }
+                        } catch (e) { /* fallback */ }
+                    }
+
+                    setPosts([p]);
                     setVenue(data.venue);
                     setLoading(false);
                 } catch (e) {
@@ -55,15 +70,39 @@ export default function StoryScreen() {
                         apiFetch(`/api/venues/${vId}`)
                     ]);
 
-                    const allPosts = postsData.posts || [];
-                    if (allPosts.length === 0) {
+                    const rawPosts = postsData.posts || [];
+                    if (rawPosts.length === 0) {
                         router.back();
                         return;
                     }
 
-                    const idx = allPosts.findIndex((p: any) => p.id === postId);
-                    setPosts(allPosts);
-                    setCurrentIndex(idx >= 0 ? idx : 0);
+                    // Flatten multi-media posts into individual story items
+                    const flattenedPosts: any[] = [];
+                    let targetIndex = 0;
+                    
+                    rawPosts.forEach((p: any) => {
+                        const isCurrentPost = p.id === postId;
+                        
+                        if (typeof p.media_url === 'string' && p.media_url.startsWith('[')) {
+                            try {
+                                const urls = JSON.parse(p.media_url);
+                                if (Array.isArray(urls)) {
+                                    urls.forEach((url, subIdx) => {
+                                        // If this was the target post, the first item in the expansion is our starting point
+                                        if (isCurrentPost && subIdx === 0) targetIndex = flattenedPosts.length;
+                                        flattenedPosts.push({ ...p, media_url: url });
+                                    });
+                                    return;
+                                }
+                            } catch (e) { /* fallback to single */ }
+                        }
+                        
+                        if (isCurrentPost) targetIndex = flattenedPosts.length;
+                        flattenedPosts.push(p);
+                    });
+
+                    setPosts(flattenedPosts);
+                    setCurrentIndex(targetIndex);
                     setVenue(venueData.venue);
                 } catch (e) {
                     console.error("Failed to load venue stories", e);

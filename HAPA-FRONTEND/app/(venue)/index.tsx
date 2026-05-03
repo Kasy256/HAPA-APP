@@ -209,7 +209,7 @@ export default function VenueHomeScreen() {
   };
 
   return (
-    <ScreenWrapper style={styles.container}>
+    <ScreenWrapper style={styles.container} edges={['top', 'left', 'right']}>
       <ScrollView showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <View>
@@ -219,23 +219,32 @@ export default function VenueHomeScreen() {
             {loadingVenue ? (
               <SkeletonBox width={180} height={20} borderRadius={10} />
             ) : (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               <Text style={styles.venueName}>{venueName}</Text>
+              {subscription.tier === 'pro' && (
+                <Ionicons name="checkmark-circle" size={24} color="#1D9BF0" />
+              )}
+              {subscription.tier === 'elite' && (
+                <Ionicons name="checkmark-circle" size={24} color="#FFD700" />
+              )}
+            </View>
             )}
           </View>
           <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+            <TouchableOpacity
+              style={styles.promoteButton}
+              activeOpacity={0.7}
+              onPress={() => router.push('/(venue)/promote' as any)}
+            >
+              <Ionicons name="megaphone-outline" size={18} color="white" />
+              <Text style={styles.promoteButtonText}>Promote</Text>
+            </TouchableOpacity>
             <TouchableOpacity
               style={styles.iconButton}
               activeOpacity={0.7}
               onPress={handleSignOut}
             >
               <Ionicons name="log-out-outline" size={20} color={Colors.text.primary} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.iconButton, { backgroundColor: 'rgba(255,59,48,0.1)' }]}
-              activeOpacity={0.7}
-              onPress={handleDeleteAccount}
-            >
-              <Ionicons name="trash-outline" size={20} color="#FF3B30" />
             </TouchableOpacity>
           </View>
         </View>
@@ -314,45 +323,54 @@ export default function VenueHomeScreen() {
           </View>
         </View>
 
-        {/* Elite Analytics Metrics */}
-        {!subscription.loading && subscription.tier === 'elite' && (
-          <View style={styles.statsContainer}>
-            <View style={styles.statCard}>
-              <View style={[styles.iconBox, { backgroundColor: 'rgba(255, 215, 0, 0.2)' }]}>
-                <Ionicons name="footsteps" size={24} color="#FFD700" />
-              </View>
-              {loadingVenue ? (
-                <>
-                  <SkeletonBox width={60} height={20} borderRadius={10} />
-                  <View style={{ height: 6 }} />
-                  <SkeletonBox width={80} height={14} borderRadius={8} />
-                </>
-              ) : (
-                <>
-                  <Text style={styles.statNumber}>{metrics.walkins_count}</Text>
-                  <Text style={styles.statLabel}>Walk-ins</Text>
-                </>
-              )}
-            </View>
+        {/* Tiered Analytics Metrics */}
+        <View style={styles.statsContainer}>
+          {/* Shares - Visible for Pro & Elite */}
+          {(subscription.tier === 'pro' || subscription.tier === 'elite') ? (
             <View style={styles.statCard}>
               <View style={[styles.iconBox, { backgroundColor: 'rgba(29, 155, 240, 0.2)' }]}>
                 <Ionicons name="share-social" size={24} color="#1D9BF0" />
               </View>
-              {loadingVenue ? (
-                <>
-                  <SkeletonBox width={60} height={20} borderRadius={10} />
-                  <View style={{ height: 6 }} />
-                  <SkeletonBox width={80} height={14} borderRadius={8} />
-                </>
-              ) : (
-                <>
-                  <Text style={styles.statNumber}>{metrics.post_shares}</Text>
-                  <Text style={styles.statLabel}>Post Shares</Text>
-                </>
-              )}
+              <Text style={styles.statNumber}>{metrics.post_shares}</Text>
+              <Text style={styles.statLabel}>Post Shares</Text>
             </View>
-          </View>
-        )}
+          ) : (
+            <TouchableOpacity 
+              style={[styles.statCard, { opacity: 0.5 }]}
+              onPress={() => router.push('/(venue)/subscription')}
+            >
+              <Ionicons name="lock-closed" size={16} color="white" style={{ position: 'absolute', top: 10, right: 10 }} />
+              <View style={[styles.iconBox, { backgroundColor: 'rgba(255,255,255,0.1)' }]}>
+                <Ionicons name="share-social" size={24} color="rgba(255,255,255,0.4)" />
+              </View>
+              <Text style={styles.statNumber}>—</Text>
+              <Text style={styles.statLabel}>Shares (Pro)</Text>
+            </TouchableOpacity>
+          )}
+
+          {/* Walk-ins - Visible for Elite */}
+          {subscription.tier === 'elite' ? (
+            <View style={styles.statCard}>
+              <View style={[styles.iconBox, { backgroundColor: 'rgba(255, 215, 0, 0.2)' }]}>
+                <Ionicons name="footsteps" size={24} color="#FFD700" />
+              </View>
+              <Text style={styles.statNumber}>{metrics.walkins_count}</Text>
+              <Text style={styles.statLabel}>Walk-ins</Text>
+            </View>
+          ) : (
+            <TouchableOpacity 
+              style={[styles.statCard, { opacity: 0.5 }]}
+              onPress={() => router.push('/(venue)/subscription')}
+            >
+              <Ionicons name="lock-closed" size={16} color="white" style={{ position: 'absolute', top: 10, right: 10 }} />
+              <View style={[styles.iconBox, { backgroundColor: 'rgba(255,255,255,0.1)' }]}>
+                <Ionicons name="footsteps" size={24} color="rgba(255,255,255,0.4)" />
+              </View>
+              <Text style={styles.statNumber}>—</Text>
+              <Text style={styles.statLabel}>Walk-ins (Elite)</Text>
+            </TouchableOpacity>
+          )}
+        </View>
 
         {/* Recent Posts */}
         <View style={styles.sectionHeader}>
@@ -389,16 +407,36 @@ export default function VenueHomeScreen() {
                   activeOpacity={0.9}
                   onPress={() => !p.isPending && router.push(`/story/${p.id}`)}
                 >
-                  {p.media_type === 'video' ? (
-                    <VideoThumbnail uri={p.media_url} />
-                  ) : (
-                    <Image source={{ uri: p.media_url }} style={styles.postImage} />
-                  )}
+                  {(() => {
+                    let thumbUrl = p.media_url;
+                    if (typeof p.media_url === 'string' && p.media_url.startsWith('[')) {
+                      try {
+                        const parsed = JSON.parse(p.media_url);
+                        thumbUrl = Array.isArray(parsed) ? parsed[0] : p.media_url;
+                      } catch { thumbUrl = p.media_url; }
+                    }
+
+                    if (p.media_type === 'video' || (typeof thumbUrl === 'string' && thumbUrl.includes('.mp4'))) {
+                      return <VideoThumbnail uri={thumbUrl} />;
+                    }
+                    return <Image source={{ uri: thumbUrl }} style={styles.postImage} />;
+                  })()}
                   <LinearGradient
                     colors={['transparent', 'rgba(0,0,0,0.8)']}
                     style={styles.postGradient}
                   />
+                  {p.is_user_post && (
+                    <View style={styles.userVibeBadge}>
+                      <Ionicons name="people" size={10} color="white" />
+                      <Text style={styles.userVibeText}>User Vibe</Text>
+                    </View>
+                  )}
                   <View style={styles.postContent}>
+                    {p.is_user_post && (
+                      <Text style={styles.authorAlias} numberOfLines={1}>
+                        by {p.author_alias || 'Hapa User'}
+                      </Text>
+                    )}
                     {!!p.caption && (
                       <Text style={styles.postCaption} numberOfLines={2}>
                         {p.caption}
@@ -455,7 +493,7 @@ export default function VenueHomeScreen() {
           </LinearGradient>
         </View>
 
-        <View style={{ height: 100 }} />
+        <View style={{ height: 20 }} />
       </ScrollView>
     </ScreenWrapper>
   );
@@ -473,6 +511,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  promoteButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#BD3115',
+    borderRadius: 20,
+  },
+  promoteButtonText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '700',
   },
   iconButton: {
     padding: 8,
@@ -555,11 +607,33 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   postGradient: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 12,
+  },
+  userVibeBadge: {
     position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: '50%',
+    top: 10,
+    left: 10,
+    backgroundColor: 'rgba(0,194,255,0.8)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    zIndex: 5,
+  },
+  userVibeText: {
+    color: 'white',
+    fontSize: 10,
+    fontWeight: 'bold',
+    textTransform: 'uppercase',
+  },
+  authorAlias: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 11,
+    fontWeight: '600',
+    marginBottom: 2,
   },
   postContent: {
     position: 'absolute',

@@ -192,7 +192,9 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 CREATE OR REPLACE FUNCTION trg_increment_post_count()
 RETURNS TRIGGER AS $$
 BEGIN
-  PERFORM increment_post_count(NEW.venue_id);
+  IF NEW.is_user_post = FALSE THEN
+    PERFORM increment_post_count(NEW.venue_id);
+  END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;

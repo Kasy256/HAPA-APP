@@ -9,9 +9,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 interface ScreenWrapperProps {
     children: React.ReactNode;
     style?: ViewStyle;
+    edges?: ('top' | 'right' | 'bottom' | 'left')[];
 }
 
-export function ScreenWrapper({ children, style }: ScreenWrapperProps) {
+export function ScreenWrapper({ children, style, edges }: ScreenWrapperProps) {
     return (
         <LinearGradient
             colors={Colors.background.gradient}
@@ -19,7 +20,7 @@ export function ScreenWrapper({ children, style }: ScreenWrapperProps) {
             locations={[0, 0.35, 0.8]} // Targeted stops for the red-dark palette
         >
             <StatusBar style="light" />
-            <SafeAreaView style={[styles.safeArea, style]}>
+            <SafeAreaView style={[styles.safeArea, style]} edges={edges}>
                 {children}
             </SafeAreaView>
         </LinearGradient>

@@ -63,6 +63,7 @@ export default {
             'expo-font',
             'expo-secure-store',
             'expo-video',
+            'react-native-compressor',
             [
                 'expo-location',
                 {

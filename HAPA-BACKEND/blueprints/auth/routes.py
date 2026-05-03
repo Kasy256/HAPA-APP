@@ -23,6 +23,7 @@ def get_phone_for_limiter():
     return request.remote_addr
 
 @bp.post("/request-otp")
+@limiter.limit("10 per hour") # Prevent SMS pumping by limiting requests per IP
 @limiter.limit("3 per 15 minute", key_func=get_phone_for_limiter)
 def request_otp():
     data = request.get_json() or {}

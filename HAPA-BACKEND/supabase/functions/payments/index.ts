@@ -336,7 +336,19 @@ serve(async (req) => {
     const venueId = venue.id;
 
     if (req.method === "POST" && route === "initiate") {
-      const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+      // Secure IP Extraction:
+      // x-forwarded-for is a comma-separated list of IPs. The client can spoof the first one.
+      // Deno/Supabase trusted proxy usually sets the right-most IP, or we use x-real-ip if available.
+      const xRealIp = req.headers.get("x-real-ip");
+      const xForwardedFor = req.headers.get("x-forwarded-for");
+      let clientIp = "unknown";
+      
+      if (xRealIp) {
+        clientIp = xRealIp;
+      } else if (xForwardedFor) {
+        const ips = xForwardedFor.split(",");
+        clientIp = ips[ips.length - 1].trim(); // Trust the proxy's appended IP
+      }
 
       const { data: isAllowed, error: rlError } = await admin.rpc("check_rate_limit", {
         p_ip: clientIp,

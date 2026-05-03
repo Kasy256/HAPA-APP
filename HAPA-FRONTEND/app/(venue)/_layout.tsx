@@ -1,103 +1,16 @@
-
 import { Colors } from '@/constants/Colors';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { Tabs } from 'expo-router';
 import React, { useEffect } from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, View, Platform } from 'react-native';
 import * as Linking from 'expo-linking';
-import Animated, { useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import { useSubscription } from '@/hooks/useSubscription';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-function CustomTabBar({ state, descriptors, navigation }: any) {
-  const TAB_WIDTH = 280;
-  const TAB_ITEM_WIDTH = TAB_WIDTH / 3;
-  const activeIndex = state.index;
-  const insets = useSafeAreaInsets();
-
-  const { options: currentOptions } = descriptors[state.routes[activeIndex].key];
-  if (currentOptions.tabBarStyle?.display === 'none') {
-    return null;
-  }
-
-  const animatedStyle = useAnimatedStyle(() => {
-    return {
-      transform: [{ translateX: withSpring(activeIndex * TAB_ITEM_WIDTH, { damping: 15, stiffness: 120 }) }],
-    };
-  });
-
-  return (
-    <View style={[styles.bottomBarWrapper, { bottom: Math.max(insets.bottom + 12, 24) }]}>
-      <BlurView intensity={60} tint="dark" style={styles.bottomBar}>
-        <View style={[styles.switchContainer, { width: TAB_WIDTH }]}>
-          {/* Animated Indicator */}
-          <Animated.View style={[styles.activeIndicator, { width: TAB_ITEM_WIDTH }, animatedStyle]} />
-
-          {state.routes.map((route: any, index: number) => {
-            const { options } = descriptors[route.key];
-
-            // Skip if href is null (standard Expo Router way to hide from tabs)
-            if (options.href === null) return null;
-
-            const label =
-              options.tabBarLabel !== undefined
-                ? options.tabBarLabel
-                : options.title !== undefined
-                  ? options.title
-                  : route.name;
-
-            const isFocused = state.index === index;
-
-            const onPress = () => {
-              const event = navigation.emit({
-                type: 'tabPress',
-                target: route.key,
-                canPreventDefault: true,
-              });
-
-              if (!isFocused && !event.defaultPrevented) {
-                navigation.navigate(route.name, route.params);
-              }
-            };
-
-            // Define Icons
-            let iconName: any = 'home';
-            if (route.name === 'index') iconName = isFocused ? 'home' : 'home-outline';
-            if (route.name === 'create') iconName = isFocused ? 'add-circle' : 'add-circle-outline';
-            if (route.name === 'profile') iconName = isFocused ? 'person' : 'person-outline';
-
-            const routeLabel = route.name === 'index' ? 'Home' : route.name === 'create' ? 'Post' : 'Profile';
-
-            return (
-              <TouchableOpacity
-                key={route.key}
-                onPress={onPress}
-                style={[styles.navItem, { width: TAB_ITEM_WIDTH }]}
-                activeOpacity={1}
-              >
-                <Ionicons
-                  name={iconName}
-                  size={24}
-                  color={isFocused ? 'white' : 'rgba(255,255,255,0.5)'}
-                />
-                <Text style={[
-                  styles.navText,
-                  { color: isFocused ? 'white' : 'rgba(255,255,255,0.5)' }
-                ]}>
-                  {routeLabel}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      </BlurView>
-    </View>
-  );
-}
-
 export default function VenueLayout() {
   const { refresh } = useSubscription();
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     const handleDeepLink = ({ url }: { url: string }) => {
@@ -116,83 +29,86 @@ export default function VenueLayout() {
 
   return (
     <Tabs
-      tabBar={(props) => <CustomTabBar {...props} />}
       screenOptions={{
         headerShown: false,
-        tabBarStyle: { position: 'absolute' }
+        tabBarStyle: {
+            backgroundColor: '#121212',
+            height: 64 + insets.bottom,
+            borderTopWidth: StyleSheet.hairlineWidth,
+            borderTopColor: 'rgba(255,255,255,0.1)',
+            elevation: 0,
+        },
+        tabBarActiveTintColor: Colors.cta.primary,
+        tabBarInactiveTintColor: 'rgba(255,255,255,0.4)',
+        tabBarLabelStyle: {
+            fontSize: 10,
+            fontWeight: '700',
+            marginBottom: Platform.OS === 'ios' ? 0 : 8,
+        },
       }}
     >
-      <Tabs.Screen name="index" />
+      <Tabs.Screen 
+        name="index" 
+        options={{ 
+            title: 'Dashboard',
+            tabBarIcon: ({ color, focused }) => (
+                <Ionicons name={focused ? "stats-chart" : "stats-chart-outline"} size={22} color={color} />
+            )
+        }} 
+      />
+      
+
+
       <Tabs.Screen
         name="create"
         options={{
-          tabBarStyle: { display: 'none' }
+          title: 'Post',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? "add-circle" : "add-circle-outline"} size={24} color={color} />
+          )
         }}
       />
-      <Tabs.Screen name="profile" />
+
       <Tabs.Screen
-        name="edit-profile"
+        name="promote"
         options={{
-          tabBarStyle: { display: 'none' },
-          href: null,
+          title: 'Promote',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? "megaphone" : "megaphone-outline"} size={22} color={color} />
+          )
         }}
       />
-      <Tabs.Screen
-        name="subscription"
-        options={{
-          tabBarStyle: { display: 'none' },
-          href: null,
-        }}
+
+      <Tabs.Screen 
+        name="profile" 
+        options={{ 
+            title: 'Settings',
+            tabBarIcon: ({ color, focused }) => (
+                <Ionicons name={focused ? "settings" : "settings-outline"} size={22} color={color} />
+            )
+        }} 
       />
+
+      {/* Hidden Utility Screens */}
+      <Tabs.Screen name="edit-profile" options={{ href: null, tabBarStyle: { display: 'none' } }} />
+      <Tabs.Screen name="subscription" options={{ href: null, tabBarStyle: { display: 'none' } }} />
     </Tabs>
   );
 }
 
 const styles = StyleSheet.create({
-  bottomBarWrapper: {
-    position: 'absolute',
-    alignSelf: 'center',
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.5,
-    shadowRadius: 20,
-    elevation: 10,
-    borderRadius: 100,
-    overflow: 'hidden',
-  },
-  bottomBar: {
-    borderRadius: 100,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    backgroundColor: 'rgba(10, 10, 10, 0.8)',
-    padding: 4,
-  },
-  switchContainer: {
-    flexDirection: 'row',
-    height: 56,
-    alignItems: 'center',
-    position: 'relative',
-  },
-  activeIndicator: {
-    position: 'absolute',
-    left: 0,
-    height: '100%',
-    backgroundColor: Colors.cta.primary,
-    borderRadius: 30,
-    shadowColor: Colors.cta.primary,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.5,
-    shadowRadius: 8,
-  },
-  navItem: {
-    height: '100%',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 6,
-  },
-  navText: {
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
+    createBtn: {
+        width: 48,
+        height: 48,
+        borderRadius: 24,
+        backgroundColor: Colors.cta.primary,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginTop: -8,
+        shadowColor: Colors.cta.primary,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.5,
+        shadowRadius: 10,
+        elevation: 8,
+    }
 });

@@ -69,7 +69,7 @@ export async function uploadMedia(
   const fileName = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
   const contentType = type === 'video' ? 'video/mp4' : 'image/jpeg';
 
-  // Step 1: Compress image before upload (skip for video — video compression is complex)
+  // Step 1: Compress image before upload (skip for video)
   let uploadUri = fileUri;
   if (type === 'image') {
     console.log('[uploadMedia] Compressing image...');
@@ -77,20 +77,35 @@ export async function uploadMedia(
     console.log('[uploadMedia] Compression done. Uploading...');
   }
 
-  // Step 2: Read as base64 and decode to ArrayBuffer for stable RN Supabase upload
-  const base64File = await FileSystem.readAsStringAsync(uploadUri, {
-    encoding: 'base64' as any,
-  });
-  const fileBytes = decode(base64File);
+  // Step 2: Prepare body based on media type
+  let body: any;
+  if (type === 'image') {
+    console.log('[uploadMedia] Reading image into buffer...');
+    const base64 = await FileSystem.readAsStringAsync(uploadUri, { encoding: FileSystem.EncodingType.Base64 });
+    body = decode(base64);
+  } else {
+    // For videos, use FormData to stream from disk and avoid OOM (OutOfMemory)
+    console.log('[uploadMedia] Preparing stream for video...');
+    const formData = new FormData();
+    formData.append('file', {
+      uri: uploadUri,
+      name: fileName,
+      type: contentType,
+    } as any);
+    body = formData;
+  }
+
+  console.log(`[uploadMedia] Uploading ${type} to Supabase...`);
 
   // Step 3: Upload via Supabase SDK
-  const { error } = await supabase.storage.from(bucket).upload(fileName, fileBytes, {
+  const { error } = await supabase.storage.from(bucket).upload(fileName, body, {
     cacheControl: '3600',
     upsert: false,
     contentType,
   });
 
   if (error) {
+    console.error('[uploadMedia] Supabase Storage Error:', error);
     throw error;
   }
 

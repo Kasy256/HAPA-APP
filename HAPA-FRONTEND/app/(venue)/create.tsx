@@ -160,51 +160,12 @@ export default function CreatePostScreen() {
 
                             // 3. Upload runs in the background via UploadContext.
                             //    GlobalUploadProgress shows a progress bar at the top.
-                            startUpload(
-                                {
-                                    id: `pending-${Date.now()}`,
-                                    media_url: mediaUri,
-                                    media_type: mediaType,
-                                    created_at: new Date().toISOString(),
-                                    isPending: true,
-                                },
-                                async () => {
-                                    console.log(`[CreatePost] Background upload starting: ${mediaUri}`);
-                                    const publicUrl = await uploadMedia(mediaUri, {
-                                        folder: 'posts',
-                                        type: mediaType
-                                    });
-                                    console.log(`[CreatePost] Upload done. Creating record...`);
-                                    try {
-                                        await apiFetch('/api/posts', {
-                                            method: 'POST',
-                                            auth: true,
-                                            body: JSON.stringify({
-                                                media_type: mediaType,
-                                                media_url: publicUrl,
-                                            }),
-                                        });
-                                        console.log(`[CreatePost] Post record created.`);
-                                        // Refresh subscription to update counter
-                                        subscription.refresh().catch(() => { });
-                                    } catch (err: any) {
-                                        console.error(`[CreatePost] API Insert failure:`, err);
-                                        if (err.message === 'Post limit reached') {
-                                            Alert.alert(
-                                                "Post Limit Reached",
-                                                "Free venues are limited to 3 vibes per day. Upgrade to Pro for unlimited posts!",
-                                                [
-                                                    { text: "Later", style: "cancel" },
-                                                    { text: "Upgrade Now", onPress: () => router.push('/(venue)/subscription') }
-                                                ]
-                                            );
-                                        }
-                                        throw err; // Signal failure to UploadContext
-                                    }
-                                    // Haptic on success
-                                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                                }
-                            );
+                            startUpload({
+                                items: [{ uri: mediaUri, type: mediaType }],
+                                is_user_post: false,
+                            });
+                            // Haptic on success is no longer possible synchronously here because it's fire-and-forget, 
+                            // but the user gets immediate feedback via the feed navigation.
                         }}
                     >
                         <Text style={styles.postButtonText}>{isUploading ? 'Posting...' : 'Post'}</Text>

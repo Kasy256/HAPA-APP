@@ -8,7 +8,7 @@ const stripHtml = (val: string) => val.replace(/<[^>]*>?/gm, '');
 
 const PostCreateSchema = z.object({
     media_type: z.enum(["image", "video"]),
-    media_url: z.string().url(),
+    media_url: z.string(),
     caption: z.string().max(280).transform(stripHtml).optional(),
 });
 
@@ -178,42 +178,173 @@ serve(async (req) => {
         // --- ROUTE: POST / (Create) ---
         if (req.method === "POST" && pathParts.length === 0) {
             const body = await req.json().catch(() => ({}));
-            const { media_type, media_url, caption } = PostCreateSchema.parse(body);
+            
+            const PostCreateSchema = z.object({
+                media_type: z.enum(["image", "video"]),
+                media_url: z.string(),
+                caption: z.string().max(280).transform(stripHtml).optional(),
+                venue_id: z.string().uuid().optional(),
+                hashtag: z.string().max(50).optional(),
+                is_user_post: z.boolean().default(false),
+                author_alias: z.string().max(50).optional(),
+                post_type: z.enum(["vibe", "event"]).default("vibe"),
+                event_date: z.string().optional(),
+                cta_url: z.string().optional(),
+                cta_label: z.string().optional(),
+            });
 
-            // Verify ownership via admin (read-only)
-            const { data: venue, error: venueError } = await supabaseAdmin
-                .from("venues")
-                .select("id")
-                .eq("owner_id", userId)
-                .single();
+            const { 
+                media_type, media_url, caption, venue_id, hashtag, 
+                is_user_post, author_alias, post_type, event_date, 
+                cta_url, cta_label 
+            } = PostCreateSchema.parse(body);
 
-            if (venueError || !venue) throw new Error("No venue found for this owner");
+            let finalVenueId = venue_id;
+            let finalIsUserPost = is_user_post;
+            let finalAlias = author_alias;
 
-            // --- POST LIMIT CHECK ---
-            const { data: limit } = await supabaseAdmin.rpc("check_post_limit", { p_venue_id: venue.id });
-            if (limit && !limit.can_post && !limit.is_unlimited) {
-                return new Response(JSON.stringify({
-                    error: "Post limit reached",
-                    details: "Free venues are limited to 3 vibes per day. Upgrade to Pro for unlimited posts."
-                }), { status: 403, headers });
+            // Alias generation if not provided for user posts
+            if (is_user_post && !finalAlias) {
+                const randomId = Math.floor(Math.random() * 1000);
+                finalAlias = `Viber #${randomId}`;
             }
 
-            const expires_at = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+            if (!is_user_post) {
+                // Official Venue Post: Verify ownership
+                const { data: venue, error: venueError } = await supabaseAdmin
+                    .from("venues")
+                    .select("id")
+                    .eq("owner_id", userId)
+                    .single();
 
-            // Insert via USER JWT so RLS enforces ownership at the DB level
-            const { data: post, error: postError } = await supabaseClient
+                if (venueError || !venue) {
+                    console.error("[posts] No venue found for owner:", userId, venueError);
+                    throw new Error("No venue found for this owner. Official posts require venue ownership.");
+                }
+                finalVenueId = venue.id;
+                
+                // Check post limit for official posts
+                const { data: limit } = await supabaseAdmin.rpc("check_post_limit", { p_venue_id: venue.id });
+                if (limit && !limit.can_post && !limit.is_unlimited) {
+                    return new Response(JSON.stringify({
+                        error: "Post limit reached",
+                        details: "Free venues are limited to 3 vibes per day. Upgrade to Pro for unlimited posts."
+                    }), { status: 403, headers });
+                }
+
+                // Tier-based Promotion Validation
+                const { data: sub } = await supabaseAdmin
+                    .from("venue_subscriptions")
+                    .select("tier")
+                    .eq("venue_id", venue.id)
+                    .eq("status", "active")
+                    .maybeSingle();
+                
+                const tier = sub?.tier || 'free';
+
+                if (post_type === 'event') {
+                    if (tier === 'free') {
+                        return new Response(JSON.stringify({ error: "Event promotion requires Hapa Pro or Elite." }), { status: 403, headers });
+                    }
+                    if (tier === 'pro') {
+                        const { data: eventCount } = await supabaseAdmin.rpc("get_venue_monthly_event_count", { p_venue_id: venue.id });
+                        if (eventCount >= 3) {
+                            return new Response(JSON.stringify({ error: "Hapa Pro is limited to 3 event promotions per month." }), { status: 403, headers });
+                        }
+                    }
+                }
+            } else {
+                // User post: Validate target
+                if (!venue_id && !hashtag) {
+                    console.error("[posts] Missing target for user post");
+                    throw new Error("User posts must tag a venue or include a hashtag.");
+                }
+            }
+
+            const expires_at = post_type === 'event' && event_date 
+                ? new Date(new Date(event_date).getTime() + 24 * 60 * 60 * 1000).toISOString() // Expire 24h AFTER event
+                : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+            // GLOBAL HUB STRATEGY: 
+            // Link hashtag posts to the manually created "HAPA Global" hub.
+            if (!finalVenueId) {
+                const cleanHashtag = (hashtag || "").replace('#', '').trim();
+                console.log("[posts] Attempting hub lookup for hashtag:", hashtag, "clean:", cleanHashtag);
+                
+                // 1. Check if hashtag matches a REAL Official Venue
+                if (cleanHashtag) {
+                    const { data: matchedVenue } = await supabaseAdmin
+                        .from("venues")
+                        .select("id")
+                        .ilike("name", cleanHashtag)
+                        .not("owner_id", "is", null)
+                        .limit(1)
+                        .maybeSingle();
+                    
+                    if (matchedVenue) {
+                        console.log("[posts] Found official venue matching hashtag:", matchedVenue.id);
+                        finalVenueId = matchedVenue.id;
+                    }
+                }
+
+                // 2. Fallback to the manual "HAPA Global" hub
+                if (!finalVenueId) {
+                    console.log("[posts] Falling back to HAPA Global hub lookup...");
+                    const { data: hub, error: hubError } = await supabaseAdmin
+                        .from("venues")
+                        .select("id")
+                        .ilike("name", "HAPA Global")
+                        .limit(1)
+                        .maybeSingle();
+                    
+                    if (hubError) console.error("[posts] HAPA Global lookup error:", hubError);
+
+                    if (hub) {
+                        console.log("[posts] Found HAPA Global hub:", hub.id);
+                        finalVenueId = hub.id;
+                    } else {
+                        console.warn("[posts] HAPA Global not found. Using emergency fallback to any venue.");
+                        // EMERGENCY: If you haven't created "HAPA Global" yet, 
+                        // use any existing venue ID to prevent a post failure.
+                        const { data: anyVenue } = await supabaseAdmin.from("venues").select("id").limit(1).maybeSingle();
+                        finalVenueId = anyVenue?.id;
+                    }
+                }
+            }
+
+            if (!finalVenueId) {
+                console.error("[posts] Critical Failure: No venue found even after fallback.");
+                throw new Error("No venues found in database. Please create 'HAPA Global' or at least one venue first.");
+            }
+
+            console.log("[posts] Inserting post for venue:", finalVenueId, "by user:", userId);
+
+            // GAP 8: For true anonymity on user vibes, we do NOT store the userId on the 
+            // posts row. This prevents any leaks if the table is ever queried.
+            // TODO: Store userId in a separate 'post_audit' table with restricted access.
+            const { data: post, error: postError } = await supabaseAdmin
                 .from("posts")
                 .insert({
-                    venue_id: venue.id,
+                    venue_id: finalVenueId,
+                    hashtag,
                     media_type,
                     media_url,
                     caption,
                     expires_at,
+                    is_user_post: finalIsUserPost,
+                    author_alias: finalAlias,
+                    post_type,
+                    event_date,
+                    cta_url,
+                    cta_label,
                 })
                 .select()
                 .single();
 
-            if (postError) throw postError;
+            if (postError) {
+                console.error("[posts] Insert error:", postError);
+                throw postError;
+            }
 
             return new Response(JSON.stringify({ post }), {
                 status: 201,

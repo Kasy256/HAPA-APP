@@ -8,36 +8,94 @@ type Props = {
     uri: string | undefined | null;
     style?: StyleProp<ViewStyle>;
     resizeMode?: 'cover' | 'contain';
-    /** If true, the video will autoplay muted as a preview (default: true) */
+    /** If true, the video will autoplay (default: true) */
     autoplay?: boolean;
+    /** Controlled playback state for feeds (TikTok style) */
+    shouldPlay?: boolean;
+    /** Audio control (default: true/muted for previews) */
+    muted?: boolean;
+    /** Show the video play badge (default: true) */
+    showVideoBadge?: boolean;
 };
 
 /**
- * Renders either an Image or a muted auto-playing VideoView depending on the media URL.
- * Used in feeds and grids so video posts don't appear as gray boxes.
+ * Renders either an Image or an auto-playing VideoView depending on the media URL.
+ * Supports active focus-based playback for feeds.
  */
-export function MediaPreview({ uri, style, resizeMode = 'cover', autoplay = true }: Props) {
-    const isVideo = isVideoUrl(uri);
+export function MediaPreview({ 
+    uri: rawUri, 
+    style, 
+    resizeMode = 'cover', 
+    autoplay = true, 
+    shouldPlay = true,
+    muted = true,
+    showVideoBadge = true
+}: Props) {
+    // Support slideshow/gallery posts by picking the first URL if it's a JSON array
+    const uri = React.useMemo(() => {
+        if (typeof rawUri === 'string' && rawUri.startsWith('[')) {
+            try {
+                const parsed = JSON.parse(rawUri);
+                return Array.isArray(parsed) ? parsed[0] : rawUri;
+            } catch {
+                return rawUri;
+            }
+        }
+        return rawUri;
+    }, [rawUri]);
 
-    // Always call the hook — React rules of hooks require it.
-    // When it's not a video we pass an empty string; the player won't load anything meaningful.
-    const player = useVideoPlayer(isVideo ? (uri ?? '') : '', (p) => {
-        if (isVideo && autoplay) {
+    const isVideo = isVideoUrl(uri);
+    
+    if (__DEV__ && uri) {
+        console.log(`[MediaPreview] Type: ${isVideo ? 'VIDEO' : 'IMAGE'}, Focus: ${shouldPlay}, URI: ${uri?.substring(0, 50)}...`);
+    }
+
+    const player = useVideoPlayer(isVideo && uri ? uri : '', (p) => {
+        if (isVideo && uri) {
             p.loop = true;
-            p.volume = 0;   // muted preview
-            p.play();
+            p.muted = muted;
+            p.volume = muted ? 0 : 1.0;
+            if (autoplay && shouldPlay) {
+                p.play();
+            }
         }
     });
 
-    // Restart playback if the URI changes
+    // Control playback based on focus (shouldPlay) and audio (muted)
     useEffect(() => {
-        if (isVideo && uri && autoplay) {
-            player.replaceAsync(uri);
-            player.loop = true;
-            player.volume = 0;
+        if (!isVideo || !player) return;
+        
+        player.muted = muted;
+        player.volume = muted ? 0 : 1.0;
+        player.loop = true; // Hard-lock looping
+        
+        if (shouldPlay) {
             player.play();
+        } else {
+            player.pause();
         }
-    }, [uri]);
+    }, [shouldPlay, muted, isVideo, player]);
+
+    const prevUriRef = React.useRef<string | null>(null);
+
+    // Restart/Replace playback if the URI changes - with cancellation safety
+    useEffect(() => {
+        let cancelled = false;
+        if (!isVideo || !uri || !player) return;
+        if (prevUriRef.current === uri) return; // skip if same URI
+        prevUriRef.current = uri;
+        
+        player.replaceAsync(uri).then(() => {
+            if (cancelled) return;
+            player.loop = true;
+            player.volume = muted ? 0 : 1.0;
+            if (shouldPlay) player.play();
+        }).catch(() => {
+            // Silently handle replace errors (e.g. if player is already destroyed)
+        });
+        
+        return () => { cancelled = true; };
+    }, [uri, isVideo, player]); // Keep muted and shouldPlay out of deps
 
     if (!uri) {
         return <View style={[{ backgroundColor: '#333' }, style]} />;
@@ -47,24 +105,27 @@ export function MediaPreview({ uri, style, resizeMode = 'cover', autoplay = true
         return (
             <View style={[{ backgroundColor: '#000' }, style]} pointerEvents="none">
                 <VideoView
+                    key={uri} // Force remount on URI change to avoid shared object crash
                     style={{ width: '100%', height: '100%' }}
                     player={player}
                     contentFit={resizeMode}
                     nativeControls={false}
                 />
                 {/* Small play icon badge so users know it's a video */}
-                <View
-                    style={{
-                        position: 'absolute',
-                        top: 8,
-                        right: 8,
-                        backgroundColor: 'rgba(0,0,0,0.5)',
-                        borderRadius: 12,
-                        padding: 4,
-                    }}
-                >
-                    <Ionicons name="play" size={14} color="white" />
-                </View>
+                {showVideoBadge && (
+                    <View
+                        style={{
+                            position: 'absolute',
+                            top: 8,
+                            right: 8,
+                            backgroundColor: 'rgba(0,0,0,0.5)',
+                            borderRadius: 12,
+                            padding: 4,
+                        }}
+                    >
+                        <Ionicons name="play" size={14} color="white" />
+                    </View>
+                )}
             </View>
         );
     }

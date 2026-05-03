@@ -5,11 +5,14 @@ from typing import Any, Dict
 
 
 def create_post(
-    venue_id: str,
-    media_type: str,
-    media_url: str,
+    venue_id: str | None = None,
+    media_type: str = "image",
+    media_url: str = "",
     caption: str | None = None,
     ttl_hours: int = 24,
+    author_alias: str | None = None,
+    is_user_post: bool = False,
+    hashtag: str | None = None,
 ) -> Dict[str, Any]:
     """
     Build a new post row for insertion into Supabase.
@@ -24,6 +27,9 @@ def create_post(
         "caption": caption,
         "created_at": now.isoformat(),
         "expires_at": expires_at.isoformat(),
+        "author_alias": author_alias,
+        "is_user_post": is_user_post,
+        "hashtag": hashtag,
         "metrics": {
             "views": 0,
             "likes": 0,
@@ -43,6 +49,9 @@ def post_to_dict(doc: Dict[str, Any]) -> Dict[str, Any]:
         "caption": doc.get("caption"),
         "created_at": doc.get("created_at"),
         "expires_at": doc.get("expires_at"),
+        "author_alias": doc.get("author_alias"),
+        "is_user_post": doc.get("is_user_post", False),
+        "hashtag": doc.get("hashtag"),
         "metrics": doc.get("metrics", {}),
         "is_liked": doc.get("is_liked", False),
     }

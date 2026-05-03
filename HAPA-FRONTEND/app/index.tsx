@@ -14,7 +14,7 @@ export default function StartScreen() {
     const [checking, setChecking] = useState(false);
 
     const handleDiscover = () => {
-        router.push('/discover');
+        router.push('/(tabs)/discover');
     };
 
     const handlePromote = async () => {

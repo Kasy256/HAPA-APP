@@ -14,6 +14,14 @@ import { UploadProvider } from '@/contexts/UploadContext';
 import { clearAuthTokens, getAccessToken, loginWithSupabase, saveAuthTokens } from '@/lib/api';
 import * as SecureStore from 'expo-secure-store';
 import { signInAnonymously, supabase } from '@/lib/supabaseClient';
+import { logger } from '@/lib/logger';
+import { LogBox } from 'react-native';
+
+// Standard ignore list to keep logs clean while catching real issues
+LogBox.ignoreLogs([
+  'Setting a timer',
+  'Cannot use shared object', // We handle this with keys, but if it happens elsewhere we want to know
+]);
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -37,7 +45,21 @@ export default function RootLayout() {
 
   // Expo Router uses Error Boundaries to catch errors in the navigation tree.
   useEffect(() => {
-    if (error) throw error;
+    if (error) {
+      logger.critical('RootLayout', 'Font loading or Layout error detected', error);
+      throw error;
+    }
+
+    // Global Unhandled Rejection Handler
+    const handleRejection = (e: any) => {
+        logger.error('Global', 'Unhandled Promise Rejection', e);
+    };
+
+    // Polyfill for unhandled rejections in some environments
+    if (typeof (global as any).onunhandledrejection !== 'undefined') {
+        (global as any).onunhandledrejection = handleRejection;
+    }
+
   }, [error]);
 
   useEffect(() => {
@@ -104,10 +126,10 @@ export default function RootLayout() {
 
       if (response?.access_token && response?.refresh_token) {
         await saveAuthTokens(response.access_token, response.refresh_token);
-        console.log('[Auth] Anonymous login successful, tokens saved.');
+        logger.info('Auth', 'Anonymous login successful, tokens saved.');
       }
     } catch (e) {
-      console.error('[Auth] Auto-login failed:', e);
+      logger.error('Auth', 'Auto-login failed', e);
     }
   }
 
@@ -128,7 +150,9 @@ function RootLayoutNav() {
           <Stack.Screen name="index" options={{ headerShown: false }} />
           <Stack.Screen name="(venue)" options={{ headerShown: false }} />
           <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: false }} />
-          <Stack.Screen name="discover" options={{ headerShown: false }} />
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="post" options={{ headerShown: false }} />
+          <Stack.Screen name="post-preview" options={{ headerShown: false }} />
           <Stack.Screen name="story/[id]" options={{ headerShown: false }} />
           <Stack.Screen name="venue/[id]" options={{ headerShown: false }} />
           <Stack.Screen name="venue-login" options={{ headerShown: false }} />

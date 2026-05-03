@@ -173,14 +173,33 @@ serve(async (req) => {
 
             if (venueError) throw venueError;
 
+            // SECURITY: Block public access to the HAPA Global hub profile
+            if (rawData.name === 'HAPA Global') {
+                return new Response(JSON.stringify({ error: "Access Denied" }), { 
+                    status: 403, 
+                    headers: { ...headers, "Content-Type": "application/json" } 
+                });
+            }
+
             // Map tier and boosted status
             const subs = rawData.venue_subscriptions;
             const activeSub = Array.isArray(subs) 
                 ? subs.find((s: any) => s.status === 'active')
                 : (subs?.status === 'active' ? subs : null);
             
+            // Robust parsing for stringified JSON fields
+            const parseField = (field: any, fallback: any = []) => {
+                if (typeof field === 'string') {
+                    try { return JSON.parse(field); } catch { return fallback; }
+                }
+                return field || fallback;
+            };
+
             const venue = {
                 ...rawData,
+                images: parseField(rawData.images),
+                categories: parseField(rawData.categories),
+                working_hours: parseField(rawData.working_hours, {}),
                 tier: activeSub?.tier || 'free',
                 is_boosted: (rawData.post_boosts || []).some((b: any) => 
                     new Date(b.starts_at) <= now && new Date(b.ends_at) > now

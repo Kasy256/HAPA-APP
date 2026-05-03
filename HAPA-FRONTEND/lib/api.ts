@@ -75,13 +75,19 @@ export function getTransformedImageUrl(
 }
 
 /**
- * Checks whether a media URL points to a video file based on its extension.
+ * Checks whether a media URL points to a video file based on its extension or storage path.
  */
 export function isVideoUrl(url: string | undefined | null): boolean {
   if (!url) return false;
-  // Strip query params before checking extension
-  const clean = url.split('?')[0].toLowerCase();
-  return /\.(mp4|mov|avi|mkv|webm|m4v|3gp)$/.test(clean);
+  // Strip query params and fragments
+  const clean = url.split('?')[0].split('#')[0].toLowerCase();
+  
+  // Explicit video extensions
+  const videoExts = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', '3gp', 'quicktime'];
+  const hasVideoExt = videoExts.some(ext => clean.endsWith(`.${ext}`));
+  
+  // Also check if the URL explicitly contains 'video' in the path (common for some storage setups)
+  return hasVideoExt || clean.includes('/video/') || clean.includes('/videos/');
 }
 
 type ApiOptions = RequestInit & { auth?: boolean };
@@ -97,6 +103,7 @@ const PATH_MAP: Record<string, string> = {
   '/api/posts': 'posts',
   '/api/venues': 'venues',
   '/api/reports': 'reports',
+  '/api/comments': 'comments',
 };
 
 export async function apiFetch(path: string, options: ApiOptions = {}) {
@@ -114,14 +121,27 @@ export async function apiFetch(path: string, options: ApiOptions = {}) {
   // Sub-path: everything after the matched prefix
   const relativePath = path.replace(matchedKey!, '');
 
-  // Auth token retrieval
-  const storedToken = await getAccessToken();
+  // Auth token retrieval: ALWAYS prefer Supabase's managed session first
+  let sessionToken: string | null = null;
+  
+  try {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+          sessionToken = data.session.access_token;
+      }
+  } catch (e) {}
 
-  let sessionToken = storedToken;
   if (!sessionToken) {
-    // Fallback to Supabase SDK session
-    const session = (await supabase.auth.getSession()).data.session;
-    sessionToken = session?.access_token || null;
+    // Fallback to legacy token
+    sessionToken = await getAccessToken();
+    
+    // If NO session exists at all, create an anonymous one so we have a valid JWT
+    if (!sessionToken) {
+        const { data, error } = await supabase.auth.signInAnonymously();
+        if (!error && data.session) {
+            sessionToken = data.session.access_token;
+        }
+    }
   }
 
   // Supabase gateway requires apikey for project identification.
@@ -156,29 +176,43 @@ export async function apiFetch(path: string, options: ApiOptions = {}) {
     throw new Error('Network request failed. Please check your internet connection and try again.');
   }
 
-  if (!response.ok) {
-    let errorBody: any = {};
-    try {
-      errorBody = await response.json();
-    } catch { }
-    console.error(`[Supabase API] Error from ${functionName}:`, {
-      status: response.status,
-      url: functionUrl,
-      body: errorBody,
-    });
+    if (!response.ok) {
+      let errorBody: any = {};
+      try {
+        errorBody = await response.json();
+      } catch { }
 
-    // Auto-logout on 401: stale token — clear stored credentials so the user
-    // is prompted to re-authenticate rather than getting cryptic error messages.
-    if (response.status === 401) {
-      console.warn('[Supabase API] 401 received — clearing auth tokens and signing out.');
-      await clearAuthTokens();
-      await supabase.auth.signOut();
+      // On 401, try to refresh the session and retry ONCE before logging out
+      if (response.status === 401) {
+        console.warn('[Supabase API] 401 received — attempting token refresh before logout.');
+        try {
+          const { data: refreshData } = await supabase.auth.refreshSession();
+          const newToken = refreshData.session?.access_token;
+          if (newToken) {
+            // Retry the request with the new token
+            const retryHeaders = { ...headers, Authorization: `Bearer ${newToken}` };
+            const retryResponse = await fetch(functionUrl, { method, headers: retryHeaders, body: options.body });
+            if (retryResponse.ok) return retryResponse.json();
+          }
+        } catch (refreshErr) {
+          console.warn('[Supabase API] Token refresh failed:', refreshErr);
+        }
+        // If retry also failed, now we log out
+        console.warn('[Supabase API] Retry failed — clearing auth tokens and signing out.');
+        await clearAuthTokens();
+        await supabase.auth.signOut();
+      }
+
+      console.error(`[Supabase API] Error from ${functionName}:`, {
+        status: response.status,
+        url: functionUrl,
+        body: errorBody,
+      });
+
+      throw new Error(
+        errorBody?.error || errorBody?.message || `HTTP ${response.status}: ${response.statusText}`
+      );
     }
-
-    throw new Error(
-      errorBody?.error || errorBody?.message || `HTTP ${response.status}: ${response.statusText}`
-    );
-  }
 
   return response.json();
 }
@@ -200,17 +234,14 @@ export async function deletePost(postId: string) {
 /**
  * Records a post share event.
  * Call this *after* the native OS share sheet confirms the action.
- * Atomically increments the post-level share counter and the venue-level
- * post_shares aggregate via a single Postgres DB function.
- *
- * Non-blocking by design — fire and forget; never await in UI hot paths.
+ * Returns the updated post metrics including the new share count.
  */
-export async function sharePost(postId: string): Promise<void> {
+export async function sharePost(postId: string): Promise<any> {
   try {
-    await apiFetch(`/api/posts/${postId}/share`, { method: 'POST' });
+    return await apiFetch(`/api/posts/${postId}/share`, { method: 'POST' });
   } catch (err) {
-    // Analytics — never surface errors to the user
     console.warn('[sharePost] Failed silently:', err);
+    return null;
   }
 }
 

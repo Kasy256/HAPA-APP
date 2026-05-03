@@ -1,21 +1,20 @@
-import { ScreenWrapper } from '@/components/ScreenWrapper';
 import { Colors } from '@/constants/Colors';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Dimensions, FlatList, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View, Linking as RNLinking, Share } from 'react-native';
-import * as Linking from 'expo-linking';
+import { Dimensions, FlatList, Image, StyleSheet, Text, TouchableOpacity, View, Share, Linking } from 'react-native';
 
 import { MediaPreview } from '@/components/MediaPreview';
 import { SkeletonBox, SkeletonCircle } from '@/components/Skeleton';
-import { VerifiedBadge } from '@/components/VerifiedBadge';
 import { apiFetch, getTransformedImageUrl, isVideoUrl, logWalkin, sharePost } from '@/lib/api';
 import { getTimeAgo } from '@/lib/time';
 import { openDirections } from '@/lib/directions';
 import { getVenueStatusText, isVenueOpen } from '@/lib/venue';
+import { LiveWall } from '@/components/LiveWall';
+import * as Haptics from 'expo-haptics';
 
-const { width } = Dimensions.get('window');
+const { width, height } = Dimensions.get('window');
 const HEADER_HEIGHT = 300;
 
 export default function PublicVenueProfileScreen() {
@@ -25,6 +24,8 @@ export default function PublicVenueProfileScreen() {
     const [loading, setLoading] = useState(true);
     const [venue, setVenue] = useState<any>(null);
     const [posts, setPosts] = useState<any[]>([]);
+    const [liveWallVisible, setLiveWallVisible] = useState(false);
+    const [selectedPost, setSelectedPost] = useState<any>(null);
 
     // Guard: ensures we only track one view per screen mount, not on re-renders
     const viewTracked = useRef(false);
@@ -35,7 +36,23 @@ export default function PublicVenueProfileScreen() {
         const load = async () => {
             try {
                 const v = await apiFetch(`/api/venues/${venueId}`);
-                setVenue(v.venue);
+                
+                // Defensive parsing for stringified JSON fields
+                const parseField = (field: any, fallback: any = []) => {
+                    if (typeof field === 'string') {
+                        try { return JSON.parse(field); } catch { return fallback; }
+                    }
+                    return field || fallback;
+                };
+
+                const venueData = v.venue ? {
+                    ...v.venue,
+                    images: parseField(v.venue.images),
+                    categories: parseField(v.venue.categories),
+                    working_hours: parseField(v.venue.working_hours, {})
+                } : null;
+
+                setVenue(venueData);
                 const p = await apiFetch(`/api/posts/venue/${venueId}`);
                 setPosts(p.posts || []);
             } catch {
@@ -54,24 +71,42 @@ export default function PublicVenueProfileScreen() {
     useEffect(() => {
         if (venue?.id && !viewTracked.current) {
             viewTracked.current = true;
-            apiFetch(`/api/venues/${venue.id}/view`, { method: 'POST', auth: true }).catch(() => {
-                // Non-critical — silently fail if view tracking fails
-            });
+            apiFetch(`/api/venues/${venue.id}/view`, { method: 'POST' }).catch(() => {});
         }
     }, [venue?.id]);
 
-    const images = (venue?.images?.length ? venue.images : []) as string[];
-
-    const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
-        if (viewableItems.length > 0) {
-            setActiveIndex(viewableItems[0].index || 0);
+    const handleShare = async (post: any) => {
+        try {
+            await Share.share({
+                message: `Check out this vibe at ${venue?.name} on HAPA! ${post.media_url}`,
+            });
+            sharePost(post.id);
+        } catch (e) {
+            console.error(e);
         }
-    }).current;
+    };
 
-    return (
-        <View style={styles.container}>
-            <ScrollView bounces={false} showsVerticalScrollIndicator={false}>
+    const handleLike = async (postId: string) => {
+        try {
+            const res = await apiFetch(`/api/posts/${postId}/like`, { method: 'POST' });
+            setPosts(prev => prev.map(p => p.id === postId ? { ...p, is_liked: !p.is_liked, metrics: res.metrics } : p));
+        } catch (e) {
+            console.error(e);
+        }
+    };
 
+    const images = useMemo(() => {
+        if (!venue?.images) return [];
+        if (Array.isArray(venue.images)) return venue.images;
+        if (typeof venue.images === 'string') {
+            try { return JSON.parse(venue.images); } catch { return []; }
+        }
+        return [];
+    }, [venue?.images]);
+
+    const header = useMemo(() => {
+        return (
+            <View style={styles.headerContainer}>
                 {/* Image Slideshow Header */}
                 <View style={styles.slideshowContainer}>
                     {loading ? (
@@ -83,43 +118,62 @@ export default function PublicVenueProfileScreen() {
                             pagingEnabled
                             showsHorizontalScrollIndicator={false}
                             keyExtractor={(_, index) => index.toString()}
-                            onViewableItemsChanged={onViewableItemsChanged}
-                            viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
+                            snapToInterval={width}
+                            snapToAlignment="start"
+                            decelerationRate="fast"
+                            initialNumToRender={5}
+                            windowSize={11}
+                            onMomentumScrollEnd={(e) => {
+                                const newIndex = Math.round(e.nativeEvent.contentOffset.x / width);
+                                console.log('[Slideshow] Momentum Scroll End. Target Index:', newIndex);
+                                if (newIndex !== activeIndex) {
+                                    setActiveIndex(newIndex);
+                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                }
+                            }}
                             renderItem={({ item }) => (
                                 <Image
-                                    source={{ uri: getTransformedImageUrl(item, 1000, 90) }}
+                                    source={{ uri: getTransformedImageUrl(item, 1200, 90) }}
                                     style={styles.slideImage}
                                     resizeMode="cover"
                                 />
                             )}
+                            getItemLayout={(_, index) => ({
+                                length: width,
+                                offset: width * index,
+                                index,
+                            })}
                         />
                     ) : (
                         <View style={[styles.slideImage, { backgroundColor: 'rgba(255,255,255,0.06)' }]} />
                     )}
 
-                    {/* Header Gradient Overlay */}
                     <LinearGradient
-                        colors={['rgba(0,0,0,0.6)', 'transparent', 'transparent']}
+                        colors={['rgba(0,0,0,0.4)', 'transparent', 'rgba(0,0,0,0.6)']}
                         style={styles.headerGradient}
                         pointerEvents="none"
                     />
 
-                    {/* Back Button */}
                     <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
                         <Ionicons name="arrow-back" size={28} color="white" />
                     </TouchableOpacity>
 
-                    {/* Pagination Indicator (1 of 4) */}
-                    {!loading && images.length > 0 && (
-                        <View style={styles.paginationBadge}>
-                            <Text style={styles.paginationText}>
-                                {activeIndex + 1} of {images.length}
-                            </Text>
+                    {!loading && images.length > 1 && (
+                        <View style={styles.paginationDots}>
+                            {images.map((_: string, i: number) => (
+                                <View 
+                                    key={i} 
+                                    style={[
+                                        styles.dot, 
+                                        i === activeIndex && styles.dotActive
+                                    ]} 
+                                />
+                            ))}
                         </View>
                     )}
                 </View>
 
-                <ScreenWrapper style={styles.contentWrapper}>
+                <View style={styles.contentWrapper}>
                     <View style={styles.profileHeader}>
                         <View style={styles.avatarRow}>
                             {loading ? (
@@ -142,9 +196,11 @@ export default function PublicVenueProfileScreen() {
                                     <>
                                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                                             <Text style={styles.venueName} numberOfLines={1}>{venue?.name ?? 'Venue'}</Text>
-                                            <VerifiedBadge tier={venue?.tier} size="md" />
+                                            {(venue?.tier === 'pro' || venue?.tier === 'elite') && (
+                                                <Ionicons name="checkmark-circle" size={20} color="#00C2FF" />
+                                            )}
                                         </View>
-                                        {venue?.tier && venue.tier !== 'free' && (
+                                        {(venue?.tier === 'pro' || venue?.tier === 'elite') && (
                                             <Text style={styles.verifiedCaption}>
                                                 ✓ HAPA Verified Venue
                                             </Text>
@@ -203,75 +259,80 @@ export default function PublicVenueProfileScreen() {
                     </View>
 
                     <Text style={styles.sectionTitle}>Today's Vibes</Text>
+                </View>
+            </View>
+        );
+    }, [loading, images, activeIndex, venue]);
 
-                    {/* Bigger Post Cards (Horizontal Scroll) */}
-                    <ScrollView
-                        horizontal
-                        showsHorizontalScrollIndicator={false}
-                        contentContainerStyle={styles.postsContainer}
-                    >
-                        {loading ? (
-                            <>
-                                {[1, 2, 3].map(i => (
-                                    <View key={i} style={styles.postCard}>
-                                        <SkeletonBox width="100%" height={250} borderRadius={16} />
-                                    </View>
-                                ))}
-                            </>
-                        ) : (
-                            posts.map(p => (
-                                <TouchableOpacity
-                                    key={p.id}
-                                    style={[
-                                        styles.postCard,
-                                        p.is_boosted && styles.boostedPostHighlight
-                                    ]}
-                                    activeOpacity={0.9}
-                                    onPress={() => router.push(`/story/${p.id}`)}
-                                >
-                                    <MediaPreview uri={isVideoUrl(p.media_url) ? p.media_url : getTransformedImageUrl(p.media_url, 400)} style={styles.postImage} />
+    const renderPost = ({ item }: { item: any }) => (
+        <TouchableOpacity 
+            style={styles.vibeCard}
+            onPress={() => router.push({
+                pathname: '/(tabs)/discover',
+                params: { postId: item.id, venueId: venue?.id }
+            })}
+        >
+            <MediaPreview 
+                uri={isVideoUrl(item.media_url) ? item.media_url : getTransformedImageUrl(item.media_url, 400)} 
+                style={styles.vibeMedia}
+                resizeMode="cover"
+            />
+            <LinearGradient
+                colors={['transparent', 'rgba(0,0,0,0.8)']}
+                style={styles.vibeCardOverlay}
+            >
+                <View style={styles.vibeCardFooter}>
+                    <Text style={styles.vibeCardTime}>{getTimeAgo(item.created_at)}</Text>
+                    <View style={styles.vibeCardMetrics}>
+                        <View style={styles.metricItem}>
+                            <Ionicons name="heart" size={10} color="#FF4FA3" />
+                            <Text style={styles.metricText}>{item.metrics?.likes || 0}</Text>
+                        </View>
+                        <View style={styles.metricItem}>
+                            <Ionicons name="chatbubble" size={10} color="white" />
+                            <Text style={styles.metricText}>{item.metrics?.comments || 0}</Text>
+                        </View>
+                    </View>
+                </View>
+            </LinearGradient>
+            {item.is_boosted && (
+                <View style={styles.vibeBoostBadge}>
+                    <Ionicons name="flash" size={10} color="#FFD700" />
+                </View>
+            )}
+        </TouchableOpacity>
+    );
 
-                                    <LinearGradient
-                                        colors={['transparent', 'rgba(0,0,0,0.8)']}
-                                        style={styles.postGradient}
-                                    />
-                                    
-                                    {/* Share Vibes Button */}
-                                    <TouchableOpacity 
-                                        style={styles.shareButton}
-                                        onPress={(e) => {
-                                            e.stopPropagation(); // prevent opening story
-                                            const appUrl = Linking.createURL('/story/' + p.id);
-                                            const webUrl = 'https://www.gethapa.com';
-                                            
-                                            Share.share({
-                                                message: `Check out the vibes at ${venue?.name ?? 'this venue'} on HAPA 🎉\n\nApp: ${appUrl}\n\nDownload: ${webUrl}`,
-                                            }).then(res => {
-                                                if (res.action === Share.sharedAction) sharePost(p.id);
-                                            }).catch(() => {});
-                                        }}
-                                    >
-                                        <Ionicons name="share-social" size={18} color="white" />
-                                    </TouchableOpacity>
+    return (
+        <View style={styles.container}>
+            <FlatList
+                data={posts}
+                keyExtractor={item => item.id}
+                ListHeaderComponent={header}
+                renderItem={renderPost}
+                numColumns={3}
+                columnWrapperStyle={styles.vibeRow}
+                showsVerticalScrollIndicator={false}
+                ListEmptyComponent={
+                    !loading ? (
+                        <View style={styles.emptyContainer}>
+                            <Ionicons name="camera-outline" size={48} color="rgba(255,255,255,0.1)" />
+                            <Text style={styles.emptyText}>No vibes posted yet today.</Text>
+                        </View>
+                    ) : null
+                }
+                contentContainerStyle={{ paddingBottom: 50 }}
+            />
 
-                                    <View style={styles.postContent}>
-                                        {!!p.caption && (
-                                            <Text style={styles.postCaption} numberOfLines={2}>
-                                                {p.caption}
-                                            </Text>
-                                        )}
-                                        <Text style={styles.postTime}>{getTimeAgo(p.created_at)}</Text>
-                                    </View>
-                                </TouchableOpacity>
-                            ))
-                        )}
-                    </ScrollView>
-
-                    {/* Spacer for bottom */}
-                    <View style={{ height: 40 }} />
-
-                </ScreenWrapper>
-            </ScrollView>
+            {selectedPost && (
+                <LiveWall
+                    visible={liveWallVisible}
+                    onClose={() => setLiveWallVisible(false)}
+                    venueId={selectedPost.venue_id}
+                    hashtag={selectedPost.hashtag}
+                    title={venue?.name || "Vibe"}
+                />
+            )}
         </View>
     );
 }
@@ -280,6 +341,9 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
         backgroundColor: Colors.background.gradient[2],
+    },
+    headerContainer: {
+        width: '100%',
     },
     slideshowContainer: {
         height: HEADER_HEIGHT,
@@ -302,20 +366,25 @@ const styles = StyleSheet.create({
         padding: 8,
         borderRadius: 20,
         backgroundColor: 'rgba(0,0,0,0.3)',
+        zIndex: 10,
     },
-    paginationBadge: {
+    paginationDots: {
         position: 'absolute',
-        bottom: 20,
-        right: 20,
-        backgroundColor: 'rgba(0,0,0,0.6)',
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderRadius: 16,
+        bottom: 40,
+        flexDirection: 'row',
+        alignSelf: 'center',
+        gap: 6,
+        zIndex: 10,
     },
-    paginationText: {
-        color: 'white',
-        fontSize: 12,
-        fontWeight: 'bold',
+    dot: {
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+        backgroundColor: 'rgba(255,255,255,0.4)',
+    },
+    dotActive: {
+        width: 20, // Wider active dot like premium apps
+        backgroundColor: 'white',
     },
     contentWrapper: {
         marginTop: -20, // Overlap cover
@@ -333,9 +402,9 @@ const styles = StyleSheet.create({
         gap: 16,
     },
     avatar: {
-        width: 80,
-        height: 80,
-        borderRadius: 40,
+        width: 70,
+        height: 70,
+        borderRadius: 35,
         borderWidth: 2,
         borderColor: 'white',
     },
@@ -343,15 +412,10 @@ const styles = StyleSheet.create({
         flex: 1,
     },
     venueName: {
-        fontSize: 24,
+        fontSize: 20,
         fontWeight: 'bold',
         color: Colors.text.primary,
         flexShrink: 1,
-    },
-    category: {
-        color: Colors.text.secondary,
-        fontSize: 14,
-        marginTop: 4,
     },
     statusRow: {
         flexDirection: 'row',
@@ -420,88 +484,71 @@ const styles = StyleSheet.create({
         paddingHorizontal: 20,
         marginBottom: 16,
     },
-    postsContainer: {
+    vibeRow: {
         paddingHorizontal: 20,
-        paddingBottom: 20,
-        gap: 16,
+        justifyContent: 'flex-start',
     },
-    postCard: {
-        width: 160,
-        height: 250,
-        borderRadius: 16,
-        overflow: 'hidden',
+    vibeCard: {
+        width: (width - 46) / 3, // (width - 40 total padding - 6 for gaps)
+        height: ((width - 46) / 3) * 1.4,
+        margin: 1,
+        backgroundColor: '#1C1C1E',
         position: 'relative',
-        backgroundColor: '#333',
     },
-    postImage: {
-        width: '100%',
-        height: '100%',
-    },
-    postGradient: {
+    vibeCardOverlay: {
         position: 'absolute',
         bottom: 0,
         left: 0,
         right: 0,
-        height: '50%',
+        height: 50,
+        justifyContent: 'flex-end',
+        padding: 6,
     },
-    postBoostBadge: {
-        position: 'absolute',
-        top: 10,
-        right: 10,
-        backgroundColor: 'rgba(0,0,0,0.6)',
-        padding: 4,
-        borderRadius: 12,
+    vibeCardFooter: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
     },
-    boostedPostHighlight: {
-        borderColor: '#FFD700',
-        borderWidth: 2,
-        shadowColor: '#FFD700',
-        shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0.5,
-        shadowRadius: 10,
-        elevation: 5,
+    vibeCardMetrics: {
+        flexDirection: 'row',
+        gap: 8,
     },
-    boostBadge: {
-        backgroundColor: '#FFD700',
-        paddingHorizontal: 8,
-        paddingVertical: 2,
-        borderRadius: 10,
+    metricItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2,
     },
-    boostText: {
-        color: '#000',
+    metricText: {
+        color: 'white',
         fontSize: 10,
         fontWeight: 'bold',
     },
-    shareButton: {
+    vibeCardTime: {
+        color: 'rgba(255,255,255,0.7)',
+        fontSize: 9,
+        fontWeight: '500',
+    },
+    vibeMedia: {
+        width: '100%',
+        height: '100%',
+    },
+    vibeBoostBadge: {
         position: 'absolute',
-        top: 8,
-        right: 8,
-        backgroundColor: 'rgba(0,0,0,0.5)',
-        width: 32,
-        height: 32,
-        borderRadius: 16,
+        top: 5,
+        right: 5,
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        padding: 2,
+        borderRadius: 8,
+    },
+    emptyContainer: {
         alignItems: 'center',
         justifyContent: 'center',
-        borderWidth: 1,
-        borderColor: 'rgba(255,255,255,0.2)',
+        paddingVertical: 60,
+        opacity: 0.5,
     },
-    postContent: {
-        position: 'absolute',
-        bottom: 12,
-        left: 12,
-        right: 12,
-    },
-    postCaption: {
+    emptyText: {
         color: 'white',
-        fontSize: 12,
-        fontWeight: '700',
-        marginBottom: 4,
-        textShadowColor: 'rgba(0,0,0,0.8)',
-        textShadowOffset: { width: 0, height: 1 },
-        textShadowRadius: 2,
-    },
-    postTime: {
-        color: 'rgba(255,255,255,0.8)',
-        fontSize: 10,
+        marginTop: 10,
+        fontSize: 14,
     }
 });

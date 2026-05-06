@@ -59,9 +59,9 @@ interface VideoItemProps {
 const VideoItem = memo(({ uri, isActive, shouldPreload, isModalVisible, style }: VideoItemProps) => {
     const isFocused = useIsFocused();
     const reallyActive = isActive && isFocused && !isModalVisible;
-    // Preload: give the player a source so it can buffer, but only if screen is focused.
-    // When screen blurs (e.g. tab switch), sourceUri becomes null -> releases hardware decoder.
-    const sourceUri = (isActive || shouldPreload) && isFocused ? uri : null;
+    // Keep sourceUri active even when blurred to prevent Fabric churn during transitions.
+    // The player will still pause via reallyActive.
+    const sourceUri = (isActive || shouldPreload) ? uri : null;
 
     const player = useVideoPlayer(sourceUri, p => {
         p.loop = true;
@@ -81,16 +81,15 @@ const VideoItem = memo(({ uri, isActive, shouldPreload, isModalVisible, style }:
 
     return (
         <View style={[style, { backgroundColor: '#050505', overflow: 'hidden' }]}>
-            {/* Shimmer — always visible underneath, acts as the loading skeleton */}
             <LinearGradient
                 colors={['#050505', '#121212', '#050505']}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={StyleSheet.absoluteFill}
             />
-            {/* VideoView renders on top of shimmer as soon as first frame is ready */}
             {sourceUri && player && (
                 <VideoView
+                    key={uri}
                     player={player}
                     style={StyleSheet.absoluteFill}
                     contentFit="cover"
@@ -126,6 +125,7 @@ const SlideshowItem = memo(({ urls, isActive, isModalVisible, style }: {
                     [{ nativeEvent: { contentOffset: { x: scrollX } } }],
                     { useNativeDriver: false }
                 )}
+                removeClippedSubviews={false}
                 onMomentumScrollEnd={(e) => {
                     const newIndex = Math.round(e.nativeEvent.contentOffset.x / width);
                     setInnerIndex(newIndex);
@@ -169,12 +169,11 @@ const SlideshowItem = memo(({ urls, isActive, isModalVisible, style }: {
                 ))}
             </View>
 
-            {/* Swipe Hint */}
             {showHint && (
                 <View style={styles.swipeHintContainer} pointerEvents="none">
-                    <Animated.View style={styles.swipeHintCircle}>
+                    <View style={styles.swipeHintCircle}>
                         <Ionicons name="arrow-forward" size={24} color="white" />
-                    </Animated.View>
+                    </View>
                     <Text style={styles.swipeHintText}>Swipe for more</Text>
                 </View>
             )}
@@ -586,6 +585,13 @@ export default function DiscoverScreen() {
             containerHeight={listHeight}
         />
     ), [displayPosts.length, insets, handleLike, handleShare, handleComment, liveWallVisible, router, listHeight]);
+
+    const getItemType = useCallback((item: any) => {
+        const mediaUrls = typeof item.media_url === 'string' && item.media_url.startsWith('[') ? JSON.parse(item.media_url) : [item.media_url];
+        if (mediaUrls.length > 1) return 'slideshow';
+        if (isVideoUrl(item.media_url)) return 'video';
+        return 'image';
+    }, []);
     // NOTE: using activeIndexRef + DeviceEventEmitter to manage active states.
 
     if (loading) return <DiscoverSkeleton />;
@@ -603,7 +609,7 @@ export default function DiscoverScreen() {
                 ref={listRef}
                 data={displayPosts}
                 renderItem={renderItem}
-                keyExtractor={(item: any) => item.id || 'pending'}
+                keyExtractor={(item: any, index) => item.id?.toString() || item._id?.toString() || `pending-${index}`}
                 estimatedItemSize={listHeight}
                 pagingEnabled
                 showsVerticalScrollIndicator={false}
@@ -613,6 +619,7 @@ export default function DiscoverScreen() {
                 onRefresh={() => loadFeed(true)}
                 refreshing={refreshing}
                 removeClippedSubviews={false}
+                getItemType={getItemType}
             />
 
             {selectedPost && (

@@ -83,6 +83,7 @@ export default {
                     photosPermission: 'Allow HAPA to access your photos to share vibes from your gallery.',
                 },
             ],
+            'expo-web-browser',
         ],
         experiments: {
             typedRoutes: true

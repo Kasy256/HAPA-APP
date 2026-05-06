@@ -3,14 +3,16 @@ import { Colors } from '@/constants/Colors';
 import { apiFetch } from '@/lib/api';
 import { useUpload } from '@/contexts/UploadContext';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter, useNavigation } from 'expo-router';
 import { useIsFocused } from '@react-navigation/native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import * as Location from 'expo-location';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
+    Animated,
     Image,
     KeyboardAvoidingView,
     Platform,
@@ -118,7 +120,6 @@ export default function PreviewScreen() {
         // Instant navigation back to feed (TikTok pattern)
         router.replace('/(tabs)/discover');
     }, [capturedItems, tagType, selectedVenue, tagValue, caption, router, startUpload]);
-
     if (capturedItems.length === 0) {
         return (
             <View style={styles.errorContainer}>
@@ -237,51 +238,57 @@ const VideoPreview = React.memo(({ uri, isIdle, onResume, onReady }: { uri: stri
     const isFocused = useIsFocused();
     const [hasTriggeredReady, setHasTriggeredReady] = useState(false);
 
-    // Initialise player once
-    const player = useVideoPlayer(uri, p => {
+    // TikTok Pattern: Source is focus-gated. When user taps "Share" and navigation
+    // begins, isFocused goes false, and the hardware decoder is released BEFORE
+    // the Discover feed's players start competing for the same resource.
+    const sourceUri = isFocused ? uri : null;
+
+    const player = useVideoPlayer(sourceUri, p => {
         p.loop = true;
         p.volume = 1.0;
         p.muted = false;
     });
 
-    // Clash 5: Fetch location only after player is ready (hardware serialisation)
+    // Signal onReady to trigger location fetch (hardware serialisation)
     useEffect(() => {
         if (!player || hasTriggeredReady) return;
-        
         const subscription = player.addListener('statusChange', ({ status }) => {
             if (status === 'readyToPlay' && !hasTriggeredReady) {
                 setHasTriggeredReady(true);
                 onReady();
             }
         });
-
         return () => subscription.remove();
     }, [player, hasTriggeredReady, onReady]);
 
     useEffect(() => {
         if (!player) return;
-        
         const active = isFocused && !isIdle;
         if (active) {
             player.play();
         } else {
             player.pause();
         }
-
-        return () => {
-            // Player disposal is handled by expo-video hook
-        };
     }, [isFocused, isIdle, player]);
 
     return (
         <View style={[styles.previewMedia, { overflow: 'hidden' }]}>
-            <VideoView
-                key={uri}
-                player={player}
+            {/* Shimmer — always underneath, acts as the loading skeleton */}
+            <LinearGradient
+                colors={['#0a0a0a', '#1c1c1e', '#0a0a0a']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
                 style={StyleSheet.absoluteFill}
-                contentFit="cover"
-                nativeControls={false}
             />
+            {/* VideoView paints on top of shimmer as soon as first frame is ready */}
+            {sourceUri && player && (
+                <VideoView
+                    player={player}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="cover"
+                    nativeControls={false}
+                />
+            )}
             {isIdle && (
                 <View style={[StyleSheet.absoluteFill, styles.previewOverlay]}>
                     <TouchableOpacity style={styles.resumeBtn} onPress={onResume}>

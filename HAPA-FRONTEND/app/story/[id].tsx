@@ -3,7 +3,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import React, { useEffect, useMemo, useState } from 'react';
+import { useIsFocused } from '@react-navigation/native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Dimensions, Image, StyleSheet, Text, TouchableOpacity, View, Share } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Linking from 'expo-linking';
@@ -117,41 +118,40 @@ export default function StoryScreen() {
 
     const currentPost = posts[currentIndex];
     const currentIsVideo = currentPost?.media_type === 'video' || isVideoUrl(currentPost?.media_url);
+    const isFocused = useIsFocused();
 
-    // Video Player
-    const player = useVideoPlayer(currentPost?.media_url ?? '', player => {
-        if (currentIsVideo) {
-            player.loop = true;
-            player.play();
-        }
+    // TikTok Pattern: Only provide source if focused AND it's a video slide.
+    // Releases hardware decoder immediately when user exits or swipes to an image.
+    const videoSourceUri = isFocused && currentIsVideo ? (currentPost?.media_url ?? null) : null;
+
+    // Video Player — source is focus-gated
+    const player = useVideoPlayer(videoSourceUri, p => {
+        p.loop = true;
+        p.muted = false;
     });
 
-    // Track buffering state so we can show a spinner and pause auto-progress
+    // Track buffering state for spinner and auto-progress pausing
     useEffect(() => {
-        if (!currentIsVideo) {
+        if (!currentIsVideo || !player) {
             setVideoBuffering(false);
             return;
         }
         const sub = player.addListener('statusChange', (ev: any) => {
-            if (ev.status === 'loading') {
-                setVideoBuffering(true);
-            } else {
-                setVideoBuffering(false);
-            }
+            setVideoBuffering(ev.status === 'loading');
         });
         return () => sub.remove();
-    }, [player, currentIsVideo]);
+    }, [player, currentIsVideo, videoSourceUri]);
 
+    // Play/Pause control based on focus and slide type
     useEffect(() => {
-        if (currentPost?.media_url && currentIsVideo) {
-            setVideoBuffering(true);
-            player.replace(currentPost.media_url);
+        if (!player) return;
+        if (isFocused && currentIsVideo) {
             player.loop = true;
             player.play();
         } else {
             player.pause();
         }
-    }, [currentPost?.media_url, currentIsVideo]);
+    }, [isFocused, currentIsVideo, currentPost?.media_url, player]);
 
     // Auto Progress Timer — pauses while video is buffering
     useEffect(() => {
@@ -269,24 +269,42 @@ export default function StoryScreen() {
 
     return (
         <View style={styles.container}>
-            {/* Media Content */}
-            {currentIsVideo ? (
-                <View style={styles.image}>
+            {/* Stable base — always rendered, like TikTok's RecyclerView ViewHolder */}
+            <View style={styles.image}>
+                {/* Shimmer placeholder — always visible underneath */}
+                <LinearGradient
+                    colors={['#050505', '#1a1a1a', '#050505']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={StyleSheet.absoluteFill}
+                />
+
+                {/* Image slide */}
+                {!currentIsVideo && (
+                    <Image
+                        source={{ uri: currentPost.media_url }}
+                        style={StyleSheet.absoluteFill}
+                        resizeMode="cover"
+                    />
+                )}
+
+                {/* Video slide — renders on top of shimmer as soon as first frame is ready */}
+                {videoSourceUri && player && (
                     <VideoView
-                        style={{ width: '100%', height: '100%' }}
                         player={player}
+                        style={StyleSheet.absoluteFill}
                         contentFit="cover"
                         nativeControls={false}
                     />
-                    {videoBuffering && (
-                        <View style={styles.bufferingOverlay}>
-                            <ActivityIndicator size="large" color="white" />
-                        </View>
-                    )}
-                </View>
-            ) : (
-                <Image source={{ uri: currentPost.media_url }} style={styles.image} resizeMode="cover" />
-            )}
+                )}
+
+                {/* Buffering spinner */}
+                {videoBuffering && (
+                    <View style={styles.bufferingOverlay}>
+                        <ActivityIndicator size="large" color="white" />
+                    </View>
+                )}
+            </View>
 
             {/* Overlay Gradient */}
             <LinearGradient

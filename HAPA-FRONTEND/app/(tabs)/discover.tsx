@@ -58,17 +58,14 @@ interface VideoItemProps {
 
 const VideoItem = memo(({ uri, isActive, shouldPreload, isModalVisible, style }: VideoItemProps) => {
     const isFocused = useIsFocused();
-    // Only play if the screen is focused, the item is active, and no modal is covering it.
     const reallyActive = isActive && isFocused && !isModalVisible;
-
-    // Aggressive Memory Management:
-    // Only give the player a URI if the item is in view/preload-range AND the screen is focused.
-    // This ensures hardware decoders are freed when the user navigates to another tab or screen.
+    // Preload: give the player a source so it can buffer, but only if screen is focused.
+    // When screen blurs (e.g. tab switch), sourceUri becomes null -> releases hardware decoder.
     const sourceUri = (isActive || shouldPreload) && isFocused ? uri : null;
 
     const player = useVideoPlayer(sourceUri, p => {
         p.loop = true;
-        p.muted = true; // start muted — updated by effect below
+        p.muted = true;
     });
 
     useEffect(() => {
@@ -80,25 +77,27 @@ const VideoItem = memo(({ uri, isActive, shouldPreload, isModalVisible, style }:
             player.muted = true;
             player.pause();
         }
-
-        return () => {
-            // No manual cleanup needed for useVideoPlayer, 
-            // calling pause() here can cause "shared object already released" crashes
-            // if the native player has already been disposed.
-        };
     }, [reallyActive, player]);
 
-    // Final guard: Ensure we don't pass a player to VideoView if the source was recently nullified
-    if (!sourceUri || !player) return <View style={[style, { backgroundColor: '#000' }]} />;
-
     return (
-        <VideoView
-            key={sourceUri}
-            player={player}
-            style={style}
-            contentFit="cover"
-            nativeControls={false}
-        />
+        <View style={[style, { backgroundColor: '#050505', overflow: 'hidden' }]}>
+            {/* Shimmer — always visible underneath, acts as the loading skeleton */}
+            <LinearGradient
+                colors={['#050505', '#121212', '#050505']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={StyleSheet.absoluteFill}
+            />
+            {/* VideoView renders on top of shimmer as soon as first frame is ready */}
+            {sourceUri && player && (
+                <VideoView
+                    player={player}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="cover"
+                    nativeControls={false}
+                />
+            )}
+        </View>
     );
 });
 
@@ -206,19 +205,31 @@ interface PostItemProps {
 const PostItem = memo(({
     item, index, activeIndexRef, totalCount, insets, onLike, onShare, onComment, isModalVisible, router, containerHeight
 }: PostItemProps) => {
-    const [, setTick] = useState(0);
+    const [visibilityState, setVisibilityState] = useState({
+        isActive: index === activeIndexRef.current,
+        shouldPreload: index >= getPreloadRange(activeIndexRef.current, totalCount).start &&
+            index <= getPreloadRange(activeIndexRef.current, totalCount).end &&
+            index !== activeIndexRef.current
+    });
 
-    // Listen to scroll events globally so we don't rely on FlashList extraData,
-    // solving stale closures and off-screen pause failures cleanly.
     useEffect(() => {
-        const sub = DeviceEventEmitter.addListener('feedActiveIndex', () => setTick(t => t + 1));
-        return () => sub.remove();
-    }, []);
+        const checkVisibility = () => {
+            const current = activeIndexRef.current;
+            const { start, end } = getPreloadRange(current, totalCount);
+            const active = index === current;
+            const preload = index >= start && index <= end && !active;
 
-    const currentActiveIndex = activeIndexRef.current;
-    const { start, end } = getPreloadRange(currentActiveIndex, totalCount);
-    const isActive = index === currentActiveIndex;
-    const shouldPreload = index >= start && index <= end && !isActive;
+            if (active !== visibilityState.isActive || preload !== visibilityState.shouldPreload) {
+                setVisibilityState({ isActive: active, shouldPreload: preload });
+            }
+        };
+
+        const sub = DeviceEventEmitter.addListener('feedActiveIndex', checkVisibility);
+        checkVisibility();
+        return () => sub.remove();
+    }, [index, totalCount, visibilityState.isActive, visibilityState.shouldPreload]);
+
+    const { isActive, shouldPreload } = visibilityState;
 
     // Support multi-media JSON strings
     const mediaUrls = React.useMemo(() => {
@@ -601,6 +612,7 @@ export default function DiscoverScreen() {
                 viewabilityConfig={{ itemVisiblePercentThreshold: 60 }}
                 onRefresh={() => loadFeed(true)}
                 refreshing={refreshing}
+                removeClippedSubviews={false}
             />
 
             {selectedPost && (

@@ -16,6 +16,7 @@ import {
     Alert,
     Dimensions,
     Image,
+    Linking,
     Share,
     StyleSheet,
     Text,
@@ -336,9 +337,16 @@ const PostItem = memo(({
 
                     {/* Event Banner */}
                     {isEvent && (
-                        <TouchableOpacity 
-                            style={styles.eventBanner} 
-                            onPress={() => item.cta_url && router.push(item.cta_url)}
+                        <TouchableOpacity
+                            style={styles.eventBanner}
+                            onPress={() => {
+                                if (!item.cta_url) return;
+                                if (item.cta_url.startsWith('http://') || item.cta_url.startsWith('https://')) {
+                                    Linking.openURL(item.cta_url);
+                                } else {
+                                    router.push(item.cta_url);
+                                }
+                            }}
                             activeOpacity={0.9}
                         >
                             <View style={styles.eventBannerInfo}>
@@ -609,7 +617,7 @@ export default function DiscoverScreen() {
                 ref={listRef}
                 data={displayPosts}
                 renderItem={renderItem}
-                keyExtractor={(item: any, index) => item.id?.toString() || item._id?.toString() || `pending-${index}`}
+                keyExtractor={(item: { id?: string | number; _id?: string | number }, index: number) => item.id?.toString() ?? item._id?.toString() ?? `pending-${index}`}
                 estimatedItemSize={listHeight}
                 pagingEnabled
                 showsVerticalScrollIndicator={false}

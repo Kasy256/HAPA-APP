@@ -265,11 +265,11 @@ export default function PublicVenueProfileScreen() {
     }, [loading, images, activeIndex, venue]);
 
     const renderPost = ({ item }: { item: any }) => (
-        <TouchableOpacity 
+        <TouchableOpacity
             style={styles.vibeCard}
-            onPress={() => router.push({
+            onPress={() => router.navigate({
                 pathname: '/(tabs)/discover',
-                params: { postId: item.id, venueId: venue?.id }
+                params: { postId: item.id }
             })}
         >
             <MediaPreview 
